@@ -4,6 +4,9 @@ import torch
 import torch.fx as fx
 from typing import Dict, Any
 
+import sys
+from tabulate import tabulate
+
 
 class OP(str, Enum):
     CALL_FUNCTION = "call_function"
@@ -66,12 +69,24 @@ class GraphProfiler(fx.Interpreter):
 
         # Printing the input nodes, node users and node names.
 
+        self.name_to_node = {}
+
+        # The nodes in the graph are stored in a dictionary. The key is the
+        # dictionaries of each run
+        self.name_to_size = {}
+        self.name_to_runtime = {}
+
         for node in self.module.graph.nodes:
-            print("Node name: ", node.name)
-            print("Node type: ", node.op)
-            print("Node target: ", node.target)
-            print("Input to this node", node.all_input_nodes)
-            print("Users of this node: ", node.users)
+            # print("Node name: ", node.name)
+            # print("Node type: ", node.op)
+            # print("Node target: ", node.target)
+            # print("Input to this node", node.all_input_nodes)
+            # print("Users of this node: ", node.users)
+
+            self.name_to_node[node.name] = node
+            self.name_to_size[node.name] = []
+            self.name_to_runtime[node.name] = []
+
 
     def run(
         self,
@@ -79,6 +94,10 @@ class GraphProfiler(fx.Interpreter):
         initial_env: Dict[fx.Node, Any] | None = None,
         enable_io_processing: bool = True
     ) -> Any:
+
+        # we will create a dictionary for retrieving the size and runtime 
+        # of an output given the name
+
         return super().run(
             *args, initial_env=initial_env, enable_io_processing=enable_io_processing
         )
@@ -88,10 +107,58 @@ class GraphProfiler(fx.Interpreter):
         # was swapped out, and if node 'n' will use this feature map 'x' as one
         # of its inputs then you swap 'x' back to the GPU memory here.
 
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        start_event.record()
+
         # you can start measuring the run-time of a node here
         result = super().run_node(n)
         # you can end measuring the run-time of a node here HINT: Use
         # torch.cuda.Events for doing time measurements of operations.
+
+        end_event.record()
+
+        torch.cuda.synchronize()
+
+        execution_time_ms = start_event.elapsed_time(end_event)
+
+        # add the execution time to the dictionary
+        self.name_to_runtime[n.name].append(execution_time_ms)
+
+        
+        # now, we start calculating the memory allocated by this node
+
+        # if this is a function call and the result is a tensor
+
+        if n.op == 'call_function':
+            if isinstance(result, torch.Tensor):
+                size_bytes = result.nelement() * result.element_size()
+                self.name_to_size[n.name].append(size_bytes)
+            else:
+                # there can be 
+                # sys.stderr.write(f'{n.name}: call_function result is not torch.Tensor. Got {type(result)}\n')
+
+                # another output we can get is a list of tensors (e.g. due to foreach operations)
+                if isinstance(result, list) and all(isinstance(r, torch.Tensor) for r in result): 
+                    size_bytes = 0
+
+                    for t in result:
+                        size_bytes += t.nelement() * t.element_size()
+
+                    self.name_to_size[n.name].append(size_bytes)
+                else:
+                    sys.stderr.write(f'{n.name}: got unhandled call_function result. Got {type(result)}\n')
+
+        elif n.op == 'placeholder':
+            if isinstance(result, torch.Tensor):
+                size_bytes = result.nelement() * result.element_size()
+                self.name_to_size[n.name].append(size_bytes) # just to have an entry for each node
+            else:
+                sys.stderr.write(f'{n.name}: got unhandled placeholder. Got {type(result)}\n')
+        else:
+            sys.stderr.write(f'{n.name}: got unhandled operation. Got {n.op}\n')
+
 
         # If you are in the forward pass region and if the current node 'n' is
         # the last user of a feature map 'x', then it should be swapped out to
@@ -103,12 +170,60 @@ class GraphProfiler(fx.Interpreter):
         # You are expected run the profiler for x warm-up iterations and y
         # actual measurement iterations. The run-time measurement then needs to
         # be averaged over the y runs.
-        pass
+
+        self.name_to_size_agg = {}
+        self.name_to_runtime_agg = {}
+
+        for k, v in self.name_to_size.items():
+            self.name_to_size_agg[k] = torch.Tensor(v).mean().item()
+
+        for k, v in self.name_to_runtime.items():
+            self.name_to_runtime_agg[k] = torch.Tensor(v).mean().item()
 
     def print_stats(self) -> None:
-        pass
+        stats_table = []
+
+        # add the column names
+        stats_table.append([
+            'name',
+            'op',
+            'target',
+            'all_input_nodes',
+            'users',
+            'memory',
+            'runtime'
+        ])
+
+        for name in self.name_to_node.keys():
+            # make sure we made measurements on all nodes
+            if name not in self.name_to_size_agg.keys():
+                sys.stderr.write(f"{name} not in name_to_size!!")
+            elif name not in self.name_to_runtime_agg.keys():
+                sys.stderr.write(f"{name} not in name_to_runtime!!")
+            else:
+                node = self.name_to_node[name]
+                node_props = [
+                    node.name,
+                    node.op,
+                    node.target,
+                    node.all_input_nodes,
+                    node.users,
+                    self.name_to_size_agg[name],
+                    self.name_to_runtime_agg[name]
+                ]
+
+                stats_table.append(node_props)
+
+        maxcolwidths = [15] * len(stats_table[0])
+
+        print(tabulate(stats_table, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
+            
 
     def reset_stats(self) -> None:
         # The statistics must be cleared out after x warm-up iterations and
         # reset before the actual measurement begins.
-        pass
+
+        # set all the measurements array to empty for resetting
+        for node in self.module.graph.nodes:
+            self.name_to_size[node.name] = []
+            self.name_to_runtime[node.name] = []

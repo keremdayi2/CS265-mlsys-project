@@ -23,6 +23,10 @@ def custom_fn(w1: torch.Tensor, w2: torch.Tensor, x: torch.Tensor) -> torch.Tens
     return w1.grad, w2.grad
 
 
+# given a computation graph, and old node (e.g. stored) 
+# and a new node (e.g. recomputed), replace all the occurences of the 
+# old node with the new node starting from the end of the computation graph
+# up to when new_node was created.
 def replace_subsequent_uses_of(
     graph: fx.Graph, old_node: fx.Node, new_node: fx.Node
 ) -> None:
@@ -33,7 +37,7 @@ def replace_subsequent_uses_of(
         if node in old_node_users:
             node.replace_input_with(old_node, new_node)
 
-
+# Why do we do this?
 def remove_detach_nodes(gm: fx.GraphModule) -> fx.GraphModule:
     for node in gm.graph.nodes:
         if node.target == torch.ops.aten.detach.default:

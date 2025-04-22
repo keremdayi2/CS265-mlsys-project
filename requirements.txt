@@ -1,0 +1,5 @@
+conda-forge::python=3.12
+conda-forge::numpy=2.2.2
+pytorch::pytorch=2.5.1
+pytorch::pytorch-cuda=12.4
+tabulate

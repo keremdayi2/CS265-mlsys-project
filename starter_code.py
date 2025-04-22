@@ -96,10 +96,12 @@ def graph_transformation(gm: fx.GraphModule, args: Any) -> fx.GraphModule:
 
 
 def experiment():
+    print("Hello there")
+
     logging.getLogger().setLevel(logging.DEBUG)
     torch.manual_seed(20)
     batch_size = 1000
-    layers = 10
+    layers = 4
     dim = 100
     num_iters = 5
 
