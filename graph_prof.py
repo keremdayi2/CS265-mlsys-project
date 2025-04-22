@@ -70,22 +70,60 @@ class GraphProfiler(fx.Interpreter):
         # Printing the input nodes, node users and node names.
 
         self.name_to_node = {}
+        self.name_to_nodetype = {}
+        self.name_to_rank = {}
 
         # The nodes in the graph are stored in a dictionary. The key is the
         # dictionaries of each run
         self.name_to_size = {}
         self.name_to_runtime = {}
 
-        for node in self.module.graph.nodes:
+        self.sep_rank = None # used to determine where the backward pass will start
+
+        # one pass in order to determine the ranks and initialize other variables
+        for rank, node in enumerate(self.module.graph.nodes):
             # print("Node name: ", node.name)
             # print("Node type: ", node.op)
             # print("Node target: ", node.target)
             # print("Input to this node", node.all_input_nodes)
             # print("Users of this node: ", node.users)
 
+            if node.target == torch.ops.separator.sep.default:
+                self.sep_rank = rank
+
+            self.name_to_rank[node.name] = rank
             self.name_to_node[node.name] = node
             self.name_to_size[node.name] = []
             self.name_to_runtime[node.name] = []
+
+        # determine the parameters and gradients
+        for node in self.module.graph.nodes:
+            if node.target == torch.ops.aten._foreach_lerp_.Scalar: # _foreach_lerp_ is linear interpolation which helps us identify the gradients and optimizer states.
+                opt_states = node.args[0]
+                grads = node.args[1]
+                
+                # sys.stderr.write(f'Momentum term: {opt_states}\n')
+                # sys.stderr.write(f'Gradients: {grads}\n')
+
+                self.grad_name = [g.name for g in grads]
+
+            # alternative way to find the gradients
+            # if node.target == torch.ops.aten._foreach_addcmul.Scalar: # this one is used in the variance term calculation. We can backtrack the optimizer states.
+            #     opt_states = node.args[0]
+            #     opt_states = [m.args[0] for m in opt_states]
+
+            #     sys.stderr.write(f'Variance term: {opt_states}\n')
+            #     sys.stderr.write(f'Gradients: {grads}\n')
+
+            #     self.grads = [g.name for g in grads]
+            
+            # this is the final adam step which sets the 
+            if node.target == torch.ops.aten._foreach_addcdiv.Scalar:
+                params = node.args[0] # first argument is the parameters that are updated.
+                self.param_name = [p.name for p in params]
+
+        sys.stderr.write(f'Gradients: {self.grad_name}\n')
+        sys.stderr.write(f'Params: {self.param_name}\n')
 
 
     def run(
@@ -94,13 +132,40 @@ class GraphProfiler(fx.Interpreter):
         initial_env: Dict[fx.Node, Any] | None = None,
         enable_io_processing: bool = True
     ) -> Any:
-
-        # we will create a dictionary for retrieving the size and runtime 
-        # of an output given the name
-
         return super().run(
             *args, initial_env=initial_env, enable_io_processing=enable_io_processing
         )
+
+    def _get_memory_usage(self, n:fx.Node, result : Any) -> int:
+        size_bytes = None
+
+        if n.op == OP.CALL_FUNCTION:
+            if isinstance(result, torch.Tensor):
+                size_bytes = result.nelement() * result.element_size()
+            else:
+                # there can be 
+                # sys.stderr.write(f'{n.name}: call_function result is not torch.Tensor. Got {type(result)}\n')
+
+                # TODO: ADD MINIMUM PYTORCH ALLOCATION
+
+                # another output we can get is a list of tensors (e.g. due to foreach operations)
+                if isinstance(result, list) and all(isinstance(r, torch.Tensor) for r in result): 
+                    size_bytes = 0
+
+                    for t in result:
+                        size_bytes += t.nelement() * t.element_size()
+                else:
+                    sys.stderr.write(f'{n.name}: got unhandled call_function result. Got {type(result)}\n')
+
+        elif n.op == OP.PLACEHOLDER:
+            if isinstance(result, torch.Tensor):
+                size_bytes = result.nelement() * result.element_size()
+            else:
+                sys.stderr.write(f'{n.name}: got unhandled placeholder. Got {type(result)}\n')
+        else:
+            sys.stderr.write(f'{n.name}: got unhandled operation. Got {n.op}\n')
+
+        return size_bytes
 
     def run_node(self, n: fx.Node) -> Any:
         # If you are in the backward pass region and one of the feature maps 'x'
@@ -126,39 +191,12 @@ class GraphProfiler(fx.Interpreter):
         # add the execution time to the dictionary
         self.name_to_runtime[n.name].append(execution_time_ms)
 
-        
         # now, we start calculating the memory allocated by this node
 
-        # if this is a function call and the result is a tensor
+        size_bytes = self._get_memory_usage(n, result)
 
-        if n.op == 'call_function':
-            if isinstance(result, torch.Tensor):
-                size_bytes = result.nelement() * result.element_size()
-                self.name_to_size[n.name].append(size_bytes)
-            else:
-                # there can be 
-                # sys.stderr.write(f'{n.name}: call_function result is not torch.Tensor. Got {type(result)}\n')
-
-                # another output we can get is a list of tensors (e.g. due to foreach operations)
-                if isinstance(result, list) and all(isinstance(r, torch.Tensor) for r in result): 
-                    size_bytes = 0
-
-                    for t in result:
-                        size_bytes += t.nelement() * t.element_size()
-
-                    self.name_to_size[n.name].append(size_bytes)
-                else:
-                    sys.stderr.write(f'{n.name}: got unhandled call_function result. Got {type(result)}\n')
-
-        elif n.op == 'placeholder':
-            if isinstance(result, torch.Tensor):
-                size_bytes = result.nelement() * result.element_size()
-                self.name_to_size[n.name].append(size_bytes) # just to have an entry for each node
-            else:
-                sys.stderr.write(f'{n.name}: got unhandled placeholder. Got {type(result)}\n')
-        else:
-            sys.stderr.write(f'{n.name}: got unhandled operation. Got {n.op}\n')
-
+        if size_bytes is not None:
+            self.name_to_size[n.name].append(size_bytes)
 
         # If you are in the forward pass region and if the current node 'n' is
         # the last user of a feature map 'x', then it should be swapped out to
@@ -175,10 +213,10 @@ class GraphProfiler(fx.Interpreter):
         self.name_to_runtime_agg = {}
 
         for k, v in self.name_to_size.items():
-            self.name_to_size_agg[k] = torch.Tensor(v).mean().item()
+            self.name_to_size_agg[k] = float(torch.Tensor(v).mean().item())
 
         for k, v in self.name_to_runtime.items():
-            self.name_to_runtime_agg[k] = torch.Tensor(v).mean().item()
+            self.name_to_runtime_agg[k] = float(torch.Tensor(v).mean().item())
 
     def print_stats(self) -> None:
         stats_table = []
@@ -218,7 +256,6 @@ class GraphProfiler(fx.Interpreter):
 
         print(tabulate(stats_table, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
             
-
     def reset_stats(self) -> None:
         # The statistics must be cleared out after x warm-up iterations and
         # reset before the actual measurement begins.
@@ -227,3 +264,7 @@ class GraphProfiler(fx.Interpreter):
         for node in self.module.graph.nodes:
             self.name_to_size[node.name] = []
             self.name_to_runtime[node.name] = []
+
+            self.name_to_size_agg = {}
+            self.name_to_runtime_agg = {}
+
