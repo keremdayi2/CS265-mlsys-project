@@ -1,5 +1,6 @@
 python=3.12
 numpy=2.2.2
+pytorch::torchvision
 pytorch::pytorch=2.5.1
 pytorch::pytorch-cuda=12.4
 expecttest

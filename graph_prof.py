@@ -234,23 +234,26 @@ class GraphProfiler(fx.Interpreter):
     def _get_memory_usage(self, n:fx.Node, result : Any) -> int:
         size_bytes = None
 
+        iterable_types = [list, tuple]
+        def is_iterable_type(obj):
+            return any(isinstance(obj, tp) for tp in iterable_types)
+
+
+        # TODO: Add minimum pytorch allocation
+
         if n.op == OP.CALL_FUNCTION:
             if isinstance(result, torch.Tensor):
                 size_bytes = result.nelement() * result.element_size()
-            else:
-                # there can be 
-                # sys.stderr.write(f'{n.name}: call_function result is not torch.Tensor. Got {type(result)}\n')
+            elif is_iterable_type(result):
+                size_bytes = 0
 
-                # TODO: ADD MINIMUM PYTORCH ALLOCATION
-
-                # another output we can get is a list of tensors (e.g. due to foreach operations)
-                if isinstance(result, list) and all(isinstance(r, torch.Tensor) for r in result): 
-                    size_bytes = 0
-
-                    for t in result:
+                for t in result:
+                    if isinstance(t, torch.Tensor):
                         size_bytes += t.nelement() * t.element_size()
-                else:
-                    sys.stderr.write(f'{n.name}: got unhandled call_function result. Got {type(result)}\n')
+                    else:
+                        sys.stderr.write(f'Got non-tensor list at {n.name}. Elements are: {type(t)}\n')
+            else:
+                sys.stderr.write(f'{n.name}: got unhandled call_function result. Got {type(result)}\n')
 
         elif n.op == OP.PLACEHOLDER:
             if isinstance(result, torch.Tensor):

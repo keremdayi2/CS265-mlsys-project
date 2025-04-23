@@ -62,7 +62,7 @@ class Experiment:
                 optim.zero_grad()
 
             self.train_step = transformer_train_step
-            self.optimizer = optim.Adam(self.model.parameters(), lr=1e-2, fused=True, capturable=True)
+            self.optimizer = optim.Adam(self.model.parameters(), lr=1e-2, foreach=True, capturable=True)
 
         elif self.model_name in ["Resnet18", "Resnet50"]:
             inp = torch.randn(self.batch_size, 3, 224, 224, device=dev)
@@ -81,7 +81,7 @@ class Experiment:
                 optim.step()
                 optim.zero_grad()
 
-            self.optimizer = optim.Adam(self.model.parameters(), lr=1e-2, fused=True, capturable=True)
+            self.optimizer = optim.Adam(self.model.parameters(), lr=1e-2, foreach=True, capturable=True)
             self.train_step = resnet_train_step
 
     def loss_fn(self, logits: torch.Tensor, targets: torch.Tensor):
