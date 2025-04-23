@@ -24,10 +24,11 @@ class NodeType(Enum):
 
     PARAM = 0
     ACT = 1
-    GRAD = 2
-    GRAD_INTERMEDIATE = 3
-    OPT_STATE = 4
-    OTHER = 5
+    ACT_DISCARD = 2
+    GRAD = 3
+    GRAD_INTERMEDIATE = 4
+    OPT_STATE = 5
+    OTHER = 6
 
 
 # This is an example graph_profiler that extends the fx.Interpreter class, it
@@ -70,7 +71,6 @@ class GraphProfiler(fx.Interpreter):
         # argument at position 1 is the list of gradient nodes.
 
         # Printing the input nodes, node users and node names.
-
         self.name_to_node = {}
         self.name_to_rank = {}
 
@@ -79,39 +79,56 @@ class GraphProfiler(fx.Interpreter):
         self.name_to_size = {}
         self.name_to_runtime = {}
 
-        self.sep_rank = None # used to determine where the backward pass will start
+        self.sep_rank = None # used to determine where the forward pass ends
+        self.sep_backward_rank = None
+
         self.op_start_rank = None
 
-        # one pass in order to determine the ranks and initialize other variables
+        # here we 
+        # 1) find where the SEP operator appears
+        # 2) set the ranks
+        # 3) find the parameters and gradients as well
+        # 4) initalize name_to_node mapping
         for rank, node in enumerate(self.module.graph.nodes):
-            # print("Node name: ", node.name)
-            # print("Node type: ", node.op)
-            # print("Node target: ", node.target)
-            # print("Input to this node", node.all_input_nodes)
-            # print("Users of this node: ", node.users)
-
             if node.target == torch.ops.separator.sep.default:
                 self.sep_rank = rank
 
+            if node.target == torch.ops.separator.sep_backward.default:
+                self.sep_backward_rank = rank
+
             if self.op_start_rank is None and node.op == 'call_function':
                 self.op_start_rank = rank
+
+            # _foreach_lerp_ is linear interpolation which helps us identify the gradients and optimizer states.
+            if node.target == torch.ops.aten._foreach_lerp_.Scalar: 
+                opt_states = node.args[0]
+                grads = node.args[1]
+                
+                # sys.stderr.write(f'Momentum term: {opt_states}\n')
+                # sys.stderr.write(f'Gradients: {grads}\n')
+
+                self.grad_name = [g.name for g in grads]
+
+            # this is the final adam step which updates the params
+            if node.target == torch.ops.aten._foreach_addcdiv.Scalar:
+                params = node.args[0] # first argument is the parameters that are updated.
+                self.param_name = [p.name for p in params]
 
             self.name_to_rank[node.name] = rank
             self.name_to_node[node.name] = node
             self.name_to_size[node.name] = []
             self.name_to_runtime[node.name] = []
 
-        # find first and last uses during forward and backward passes
-        self.name_to_first_forward, \
-            self.name_to_last_forward, \
-                self.name_to_first_backward, \
-                    self.name_to_last_backward = self._find_first_last_use() 
-
-        # sys.stderr.write(f'First forward: {self.name_to_first_forward}\n')
-        self.param_name, self.grad_name = self._find_params_grads()
-
+        # end of calculation of gradients which can be used to 
+        # tag the beginning of the optimizer stage
         g_end = max([self.name_to_rank[m] for m in self.grad_name])
         self.optimizer_start_rank = g_end + 1
+
+        # find first and last uses during forward and backward passes
+        self.first_forward, \
+            self.last_forward, \
+                self.first_backward, \
+                    self.last_backward = self._find_first_last_use() 
 
         assert self.param_name != None, "Could not find params"
         assert self.grad_name != None, "Could not find grads"
@@ -119,38 +136,9 @@ class GraphProfiler(fx.Interpreter):
         sys.stderr.write(f'Gradients: {self.grad_name}\n')
         sys.stderr.write(f'Params: {self.param_name}\n')
 
+        # finally tag all node types as 
+        # PARAM, ACT, GRAD, GRAD_INTERMEDIATE
         self.name_to_nodetype = self._tag_node_types()
-
-    def _find_params_grads(self):
-        # determine the parameters and gradients
-        grad_name, param_name = None, None
-
-        for node in self.module.graph.nodes:
-            if node.target == torch.ops.aten._foreach_lerp_.Scalar: # _foreach_lerp_ is linear interpolation which helps us identify the gradients and optimizer states.
-                opt_states = node.args[0]
-                grads = node.args[1]
-                
-                # sys.stderr.write(f'Momentum term: {opt_states}\n')
-                # sys.stderr.write(f'Gradients: {grads}\n')
-
-                grad_name = [g.name for g in grads]
-
-            # alternative way to find the gradients
-            # if node.target == torch.ops.aten._foreach_addcmul.Scalar: # this one is used in the variance term calculation. We can backtrack the optimizer states.
-            #     opt_states = node.args[0]
-            #     opt_states = [m.args[0] for m in opt_states]
-
-            #     sys.stderr.write(f'Variance term: {opt_states}\n')
-            #     sys.stderr.write(f'Gradients: {grads}\n')
-
-            #     self.grads = [g.name for g in grads]
-            
-            # this is the final adam step which sets the 
-            if node.target == torch.ops.aten._foreach_addcdiv.Scalar:
-                params = node.args[0] # first argument is the parameters that are updated.
-                param_name = [p.name for p in params]
-
-        return param_name, grad_name
 
     # return the first/last forward uses and first/last backward uses of all nodes
     # returns 4 dictionaries corresponding to these. keys are names of nodes
@@ -164,7 +152,6 @@ class GraphProfiler(fx.Interpreter):
         last_backward = dict.fromkeys(keys)
 
         # sys.stderr.write(f'First forward initialized: {first_forward}\n')
-
         for n in self.module.graph.nodes:
             name = n.name
             users = n.users 
@@ -193,7 +180,6 @@ class GraphProfiler(fx.Interpreter):
                 first_backward[name] = backward_users[0]
                 last_backward[name] = backward_users[-1]
 
-
         # out = sys.stderr
         out = sys.stdout
 
@@ -204,7 +190,6 @@ class GraphProfiler(fx.Interpreter):
 
         return first_forward, last_forward, first_backward, last_backward
 
-
     # TODO: implement
     def _tag_node_types(self):
         op_types = {}
@@ -213,16 +198,36 @@ class GraphProfiler(fx.Interpreter):
         for n in self.module.graph.nodes:
             op_types[n.name] = NodeType.OTHER
 
-        for rank, n in enumerate(self.module.graph.nodes):
-            name = n.name
+        # set the params and the gradients
+        for name in self.param_name:
+            op_types[name] = NodeType.PARAM
 
-            if rank < self.op_start_rank:
-                if name in self.param_name:
-                    op_types[name] = NodeType.PARAM
-            elif rank >= self.op_start_rank and rank < self.optimizer_start_rank:
-                op_types[name] = NodeType.ACT
-            else:
-                op_types[name] = NodeType.OTHER
+        for name in self.grad_name:
+            op_types[name] = NodeType.GRAD
+
+        # set the activations
+        for n in self.module.graph.nodes:
+            name = n.name
+            rank = self.name_to_rank[name]
+
+            if rank >= self.op_start_rank and rank <= self.sep_rank:
+                if op_types[name] == NodeType.OTHER:
+                    # if this will be reused in the backward pass 
+                    # those are what we need
+                    if self.first_backward[name] is None:
+                        op_types[name] = NodeType.ACT_DISCARD 
+                    else:
+                        op_types[name] = NodeType.ACT
+
+        # set the intermediate gradients
+        for n in self.module.graph.nodes:
+            name = n.name
+            rank = self.name_to_rank[name]
+
+            if rank >= self.sep_backward_rank and rank < self.optimizer_start_rank:
+                # if this is not a main gradient, set to intermediate
+                if op_types[name] == NodeType.OTHER:
+                    op_types[name] = NodeType.GRAD_INTERMEDIATE
 
         return op_types
 
@@ -329,7 +334,8 @@ class GraphProfiler(fx.Interpreter):
             'all_input_nodes',
             'users',
             'memory',
-            'runtime'
+            'runtime',
+            'node_type'
         ])
 
         for name in self.name_to_node.keys():
@@ -347,7 +353,8 @@ class GraphProfiler(fx.Interpreter):
                     node.all_input_nodes,
                     node.users,
                     self.name_to_size_agg[name],
-                    self.name_to_runtime_agg[name]
+                    self.name_to_runtime_agg[name],
+                    self.name_to_nodetype[name]
                 ]
 
                 stats_table.append(node_props)
