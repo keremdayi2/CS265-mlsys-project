@@ -78,6 +78,7 @@ class GraphProfiler(fx.Interpreter):
         # dictionaries of each run
         self.name_to_size = {}
         self.name_to_runtime = {}
+        self.name_to_result = {}
 
         self.sep_rank = None # used to determine where the forward pass ends
         self.sep_backward_rank = None
@@ -231,29 +232,59 @@ class GraphProfiler(fx.Interpreter):
 
         return op_types
 
-    def _get_memory_usage(self, n:fx.Node, result : Any) -> int:
-        size_bytes = None
-
+    def _is_iterable_type(self, obj):
         iterable_types = [list, tuple]
-        def is_iterable_type(obj):
-            return any(isinstance(obj, tp) for tp in iterable_types)
+        return any(isinstance(obj, tp) for tp in iterable_types)
 
+    # do a BFS search in order to retrieve the tensors in the list
+    def _unpack(self, lst):
+        result_tensors = []
+
+        Q = [a for a in lst]
+
+        result_tensors = []
+
+        while len(Q) > 0:
+            a = Q.pop(0)
+
+            if isinstance(a, torch.Tensor):
+                result_tensors.append(a)
+            elif isinstance(a, fx.Node):
+                Q.append(self.name_to_result[a.name])
+            elif isinstance(a, (list, tuple)):
+                for e in a:
+                    Q.append(e)
+            elif isinstance(a, (int, bool, float)) or a is None:
+                # we can ignore these
+                continue
+            else:
+                sys.stderr.write(f'Got unhandled type while unpacking {type(a)}\n')
+
+        return result_tensors
+
+    def _get_memory_usage(self, n:fx.Node, result : Any) -> int:
+        # we can check whether new memory was allocated using the following pattern
+        # x.storage().data_ptr() == y.storage().data_ptr()
+        # if no new-memory was allocated, we can set memory usage to 0
+
+        args = n.args
+        size_bytes = 0
 
         # TODO: Add minimum pytorch allocation
 
         if n.op == OP.CALL_FUNCTION:
-            if isinstance(result, torch.Tensor):
-                size_bytes = result.nelement() * result.element_size()
-            elif is_iterable_type(result):
-                size_bytes = 0
+            result_unpacked = self._unpack([result])
+            arg_unpacked = self._unpack(args) 
 
-                for t in result:
-                    if isinstance(t, torch.Tensor):
-                        size_bytes += t.nelement() * t.element_size()
-                    else:
-                        sys.stderr.write(f'Got non-tensor list at {n.name}. Elements are: {type(t)}\n')
-            else:
-                sys.stderr.write(f'{n.name}: got unhandled call_function result. Got {type(result)}\n')
+            # by this point, all elements are guaranteed to be torch.tensors
+            # we can check if there is any data_ptr shared between result and args
+            arg_ptrs = set(map(lambda x: x.storage().data_ptr(), arg_unpacked))
+
+            size_bytes = 0
+            for i, r in enumerate(result_unpacked):
+                if not r.storage().data_ptr() in arg_ptrs:
+                    # means this memory is new allocated
+                    size_bytes += r.nelement() * r.element_size()
 
         elif n.op == OP.PLACEHOLDER:
             if isinstance(result, torch.Tensor):
@@ -293,6 +324,8 @@ class GraphProfiler(fx.Interpreter):
         end_event.record()
 
         torch.cuda.synchronize()
+
+        self.name_to_result[n.name] = result
 
         execution_time_ms = start_event.elapsed_time(end_event)
 

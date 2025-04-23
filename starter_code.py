@@ -2,6 +2,8 @@ import logging
 import os
 from functools import wraps
 from typing import Any
+import sys
+
 
 import torch
 import torch.fx as fx
@@ -96,7 +98,7 @@ def graph_transformation(gm: fx.GraphModule, args: Any) -> fx.GraphModule:
 
 
 def experiment():
-    print("Hello there")
+    sys.stderr.write("Running starter_code.py\n")
 
     logging.getLogger().setLevel(logging.DEBUG)
     torch.manual_seed(20)
