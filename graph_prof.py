@@ -25,7 +25,9 @@ class NodeType(Enum):
     PARAM = 0
     ACT = 1
     GRAD = 2
-    OTHER = 3
+    GRAD_INTERMEDIATE = 3
+    OPT_STATE = 4
+    OTHER = 5
 
 
 # This is an example graph_profiler that extends the fx.Interpreter class, it
@@ -70,7 +72,6 @@ class GraphProfiler(fx.Interpreter):
         # Printing the input nodes, node users and node names.
 
         self.name_to_node = {}
-        self.name_to_nodetype = {}
         self.name_to_rank = {}
 
         # The nodes in the graph are stored in a dictionary. The key is the
@@ -79,6 +80,7 @@ class GraphProfiler(fx.Interpreter):
         self.name_to_runtime = {}
 
         self.sep_rank = None # used to determine where the backward pass will start
+        self.op_start_rank = None
 
         # one pass in order to determine the ranks and initialize other variables
         for rank, node in enumerate(self.module.graph.nodes):
@@ -91,12 +93,38 @@ class GraphProfiler(fx.Interpreter):
             if node.target == torch.ops.separator.sep.default:
                 self.sep_rank = rank
 
+            if self.op_start_rank is None and node.op == 'call_function':
+                self.op_start_rank = rank
+
             self.name_to_rank[node.name] = rank
             self.name_to_node[node.name] = node
             self.name_to_size[node.name] = []
             self.name_to_runtime[node.name] = []
 
+        # find first and last uses during forward and backward passes
+        self.name_to_first_forward, \
+            self.name_to_last_forward, \
+                self.name_to_first_backward, \
+                    self.name_to_last_backward = self._find_first_last_use() 
+
+        # sys.stderr.write(f'First forward: {self.name_to_first_forward}\n')
+        self.param_name, self.grad_name = self._find_params_grads()
+
+        g_end = max([self.name_to_rank[m] for m in self.grad_name])
+        self.optimizer_start_rank = g_end + 1
+
+        assert self.param_name != None, "Could not find params"
+        assert self.grad_name != None, "Could not find grads"
+
+        sys.stderr.write(f'Gradients: {self.grad_name}\n')
+        sys.stderr.write(f'Params: {self.param_name}\n')
+
+        self.name_to_nodetype = self._tag_node_types()
+
+    def _find_params_grads(self):
         # determine the parameters and gradients
+        grad_name, param_name = None, None
+
         for node in self.module.graph.nodes:
             if node.target == torch.ops.aten._foreach_lerp_.Scalar: # _foreach_lerp_ is linear interpolation which helps us identify the gradients and optimizer states.
                 opt_states = node.args[0]
@@ -105,7 +133,7 @@ class GraphProfiler(fx.Interpreter):
                 # sys.stderr.write(f'Momentum term: {opt_states}\n')
                 # sys.stderr.write(f'Gradients: {grads}\n')
 
-                self.grad_name = [g.name for g in grads]
+                grad_name = [g.name for g in grads]
 
             # alternative way to find the gradients
             # if node.target == torch.ops.aten._foreach_addcmul.Scalar: # this one is used in the variance term calculation. We can backtrack the optimizer states.
@@ -120,21 +148,83 @@ class GraphProfiler(fx.Interpreter):
             # this is the final adam step which sets the 
             if node.target == torch.ops.aten._foreach_addcdiv.Scalar:
                 params = node.args[0] # first argument is the parameters that are updated.
-                self.param_name = [p.name for p in params]
+                param_name = [p.name for p in params]
 
-        sys.stderr.write(f'Gradients: {self.grad_name}\n')
-        sys.stderr.write(f'Params: {self.param_name}\n')
+        return param_name, grad_name
+
+    # return the first/last forward uses and first/last backward uses of all nodes
+    # returns 4 dictionaries corresponding to these. keys are names of nodes
+    def _find_first_last_use(self):
+        keys = self.name_to_node.keys()
+
+        first_forward = dict.fromkeys(keys)
+        last_forward = dict.fromkeys(keys)
+
+        first_backward = dict.fromkeys(keys)
+        last_backward = dict.fromkeys(keys)
+
+        # sys.stderr.write(f'First forward initialized: {first_forward}\n')
+
+        for n in self.module.graph.nodes:
+            name = n.name
+            users = n.users 
+            users_name = [m.name for m in users]
+
+            # find forward users based on appearing before SEP operator
+            forward_users = list(filter(
+                    lambda x: self.name_to_rank[x] <= self.sep_rank, 
+                    users_name
+                    ))
+
+            # sort according to rank
+            if len(forward_users) > 0: # non-zero forward uses
+                forward_users = sorted(forward_users, key=lambda x: self.name_to_rank[x])
+                first_forward[name] = forward_users[0]
+                last_forward[name] = forward_users[-1]
+
+            # find backward users
+            backward_users = list(filter(
+                    lambda x: self.name_to_rank[x] > self.sep_rank, 
+                    users_name
+                    ))
+
+            if len(backward_users) > 0:
+                backward_users = sorted(backward_users, key=lambda x: self.name_to_rank[x])
+                first_backward[name] = backward_users[0]
+                last_backward[name] = backward_users[-1]
 
 
-    def run(
-        self,
-        *args,
-        initial_env: Dict[fx.Node, Any] | None = None,
-        enable_io_processing: bool = True
-    ) -> Any:
-        return super().run(
-            *args, initial_env=initial_env, enable_io_processing=enable_io_processing
-        )
+        # out = sys.stderr
+        out = sys.stdout
+
+        out.write(f'First forward: {first_forward}\n')
+        out.write(f'Last forward: {last_forward}\n')
+        out.write(f'First backward: {first_backward}\n')
+        out.write(f'Last backward: {last_backward}\n')
+
+        return first_forward, last_forward, first_backward, last_backward
+
+
+    # TODO: implement
+    def _tag_node_types(self):
+        op_types = {}
+
+        # initially tag everything as other
+        for n in self.module.graph.nodes:
+            op_types[n.name] = NodeType.OTHER
+
+        for rank, n in enumerate(self.module.graph.nodes):
+            name = n.name
+
+            if rank < self.op_start_rank:
+                if name in self.param_name:
+                    op_types[name] = NodeType.PARAM
+            elif rank >= self.op_start_rank and rank < self.optimizer_start_rank:
+                op_types[name] = NodeType.ACT
+            else:
+                op_types[name] = NodeType.OTHER
+
+        return op_types
 
     def _get_memory_usage(self, n:fx.Node, result : Any) -> int:
         size_bytes = None
@@ -166,6 +256,16 @@ class GraphProfiler(fx.Interpreter):
             sys.stderr.write(f'{n.name}: got unhandled operation. Got {n.op}\n')
 
         return size_bytes
+
+    def run(
+        self,
+        *args,
+        initial_env: Dict[fx.Node, Any] | None = None,
+        enable_io_processing: bool = True
+    ) -> Any:
+        return super().run(
+            *args, initial_env=initial_env, enable_io_processing=enable_io_processing
+        )
 
     def run_node(self, n: fx.Node) -> Any:
         # If you are in the backward pass region and one of the feature maps 'x'
