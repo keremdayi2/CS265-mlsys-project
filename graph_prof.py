@@ -78,12 +78,15 @@ class GraphProfiler(fx.Interpreter):
         # dictionaries of each run
         self.name_to_size = {}
         self.name_to_runtime = {}
-        self.name_to_result = {}
+        self.name_to_result_ptrs = {}
 
         self.sep_rank = None # used to determine where the forward pass ends
         self.sep_backward_rank = None
 
         self.op_start_rank = None
+
+        self.name_to_cuda_memory = {}
+        self.name_to_predicted_memory = {}
 
         # here we 
         # 1) find where the SEP operator appears
@@ -140,6 +143,11 @@ class GraphProfiler(fx.Interpreter):
         # finally tag all node types as 
         # PARAM, ACT, GRAD, GRAD_INTERMEDIATE
         self.name_to_nodetype = self._tag_node_types()
+
+        # del self.name_to_result_ptrs
+
+        # to free all the fake allocations
+        torch.cuda.empty_cache()
 
     # return the first/last forward uses and first/last backward uses of all nodes
     # returns 4 dictionaries corresponding to these. keys are names of nodes
@@ -237,7 +245,30 @@ class GraphProfiler(fx.Interpreter):
         return any(isinstance(obj, tp) for tp in iterable_types)
 
     # do a BFS search in order to retrieve the tensors in the list
-    def _unpack(self, lst):
+    def _unpack_nodes(self, lst):
+        result_tensors = []
+
+        Q = [a for a in lst]
+
+        result_tensors = []
+
+        while len(Q) > 0:
+            a = Q.pop(0)
+
+            if isinstance(a, fx.Node):
+                result_tensors.append(a)
+            elif isinstance(a, (list, tuple)):
+                for e in a:
+                    Q.append(e)
+            elif isinstance(a, (int, bool, float)) or a is None:
+                # we can ignore these
+                continue
+            else:
+                sys.stderr.write(f'Got unhandled type while unpacking {type(a)}\n')
+
+        return result_tensors
+
+    def _unpack_tensors(self, lst):
         result_tensors = []
 
         Q = [a for a in lst]
@@ -249,8 +280,6 @@ class GraphProfiler(fx.Interpreter):
 
             if isinstance(a, torch.Tensor):
                 result_tensors.append(a)
-            elif isinstance(a, fx.Node):
-                Q.append(self.name_to_result[a.name])
             elif isinstance(a, (list, tuple)):
                 for e in a:
                     Q.append(e)
@@ -273,18 +302,26 @@ class GraphProfiler(fx.Interpreter):
         # TODO: Add minimum pytorch allocation
 
         if n.op == OP.CALL_FUNCTION:
-            result_unpacked = self._unpack([result])
-            arg_unpacked = self._unpack(args) 
+            result_unpacked = self._unpack_tensors([result])
+            arg_unpacked = self._unpack_nodes(args) 
 
             # by this point, all elements are guaranteed to be torch.tensors
             # we can check if there is any data_ptr shared between result and args
-            arg_ptrs = set(map(lambda x: x.storage().data_ptr(), arg_unpacked))
+            arg_ptrs = []
+            for a in arg_unpacked:
+                arg_ptrs += self.name_to_result_ptrs[a.name]
+            arg_ptrs = set(arg_ptrs)
+
+            # sys.stderr.write(f'{arg_ptrs}\n')
 
             size_bytes = 0
             for i, r in enumerate(result_unpacked):
                 if not r.storage().data_ptr() in arg_ptrs:
                     # means this memory is new allocated
                     size_bytes += r.nelement() * r.element_size()
+                # else:
+                #     sys.stderr.write(f'Found overlapping memory in {n.name}\n')
+
 
         elif n.op == OP.PLACEHOLDER:
             if isinstance(result, torch.Tensor):
@@ -325,7 +362,13 @@ class GraphProfiler(fx.Interpreter):
 
         torch.cuda.synchronize()
 
-        self.name_to_result[n.name] = result
+        torch.cuda.empty_cache()
+        self.name_to_cuda_memory[n.name] = torch.cuda.memory_allocated()
+        # print(f'{n.name} -- memory allocated: {self.name_to_cuda_memory[n.name]} \n')
+
+        # sys.stderr.write(f'Tensors: {self._unpack_tensors([result])}')
+
+        self.name_to_result_ptrs[n.name] = [r.storage().data_ptr() for r in self._unpack_tensors([result])]
 
         execution_time_ms = start_event.elapsed_time(end_event)
 
@@ -333,7 +376,7 @@ class GraphProfiler(fx.Interpreter):
         self.name_to_runtime[n.name].append(execution_time_ms)
 
         # now, we start calculating the memory allocated by this node
-
+        # the memory usage function accounts for reused memory
         size_bytes = self._get_memory_usage(n, result)
 
         if size_bytes is not None:
@@ -371,7 +414,8 @@ class GraphProfiler(fx.Interpreter):
             'users',
             'memory',
             'runtime',
-            'node_type'
+            'node_type',
+            'mem_cuda'
         ])
 
         for name in self.name_to_node.keys():
@@ -390,7 +434,8 @@ class GraphProfiler(fx.Interpreter):
                     node.users,
                     self.name_to_size_agg[name],
                     self.name_to_runtime_agg[name],
-                    self.name_to_nodetype[name]
+                    self.name_to_nodetype[name],
+                    self.name_to_cuda_memory[name]
                 ]
 
                 stats_table.append(node_props)
@@ -410,4 +455,3 @@ class GraphProfiler(fx.Interpreter):
 
             self.name_to_size_agg = {}
             self.name_to_runtime_agg = {}
-
