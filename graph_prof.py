@@ -43,6 +43,7 @@ class NodeStats:
     last_forward : int | None = None
     first_backward : int | None = None
     last_backward : int | None = None
+    last_use : int | None = None
 
     # memory related variables
     size : List[int] = field(default_factory=list)
@@ -153,13 +154,14 @@ class GraphProfiler(fx.Interpreter):
         first_forward, \
             last_forward, \
                 first_backward, \
-                    last_backward = self._find_first_last_use() 
+                    last_backward, last_use = self._find_first_last_use() 
 
         for name in first_forward.keys():
             self.name_to_stats[name].first_forward = first_forward[name]
             self.name_to_stats[name].last_forward = last_forward[name]
             self.name_to_stats[name].first_backward = first_backward[name]
             self.name_to_stats[name].last_backward = last_backward[name]
+            self.name_to_stats[name].last_use = last_use[name]
 
         assert self.param_name != None, "Could not find params"
         assert self.grad_name != None, "Could not find grads"
@@ -186,6 +188,8 @@ class GraphProfiler(fx.Interpreter):
 
         first_backward = dict.fromkeys(keys)
         last_backward = dict.fromkeys(keys)
+
+        last_use = dict.fromkeys(keys)
 
         # sys.stderr.write(f'First forward initialized: {first_forward}\n')
         for n in self.module.graph.nodes:
@@ -215,16 +219,21 @@ class GraphProfiler(fx.Interpreter):
                 backward_users = sorted(backward_users, key=lambda x: self.name_to_stats[x].rank)
                 first_backward[name] = backward_users[0]
                 last_backward[name] = backward_users[-1]
+            
+            if len(users) >0 :
+                users_sorted = sorted(users_name, key=lambda x: self.name_to_stats[x].rank)
+                last_use[name] = users_sorted[-1]
 
-        # out = sys.stderr
-        out = sys.stdout
+        # # out = sys.stderr
+        # out = sys.stdout
 
-        out.write(f'First forward: {first_forward}\n')
-        out.write(f'Last forward: {last_forward}\n')
-        out.write(f'First backward: {first_backward}\n')
-        out.write(f'Last backward: {last_backward}\n')
+        # out.write(f'First forward: {first_forward}\n')
+        # out.write(f'Last forward: {last_forward}\n')
+        # out.write(f'First backward: {first_backward}\n')
+        # out.write(f'Last backward: {last_backward}\n')
+        # out.write(f'Last use: {last_use}\n')
 
-        return first_forward, last_forward, first_backward, last_backward
+        return first_forward, last_forward, first_backward, last_backward, last_use
 
     # TODO: implement
     def _tag_node_types(self):
@@ -441,7 +450,7 @@ class GraphProfiler(fx.Interpreter):
          'all_input_nodes', 'users', 'size', 
          'runtime', 'type', 'mem_cuda',
           'mem_cuda_pre', 'mem_cuda_peak',
-           'first_forward', 'last_forward', 'first_backward', 'last_backward']
+           'first_forward', 'last_forward', 'first_backward', 'last_backward', 'last_use']
 
         data = []
 
@@ -465,6 +474,7 @@ class GraphProfiler(fx.Interpreter):
             row.append(stats.last_forward)
             row.append(stats.first_backward)
             row.append(stats.last_backward)
+            row.append(stats.last_use)
             data.append(row)
 
         df = pd.DataFrame(data, columns=columns)

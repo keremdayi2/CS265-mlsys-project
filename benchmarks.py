@@ -15,6 +15,7 @@ from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
 import sys
+import argparse
 
 model_names: List[str] = [
     "Transformer",
@@ -120,7 +121,13 @@ class Experiment:
 
 
 if __name__ == "__main__":
-    model_idx = 1
+    parser = argparse.ArgumentParser(description="Run benchmarks")
+    parser.add_argument("--model_idx", type=int, help="Model index to run")
+
+    args = parser.parse_args()
+
+    model_idx = args.model_idx
+
     model_name = model_names[model_idx]
     sys.stderr.write(f'{model_name}\n')
     
