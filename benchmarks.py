@@ -14,6 +14,7 @@ from torchvision.models import resnet18, resnet50
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
+import sys
 
 model_names: List[str] = [
     "Transformer",
@@ -119,7 +120,13 @@ class Experiment:
 
 
 if __name__ == "__main__":
-    exp = Experiment(model_names[1], model_batch_sizes[model_names[1]])
+    model_idx = 2
+    model_name = model_names[model_idx]
+    sys.stderr.write(f'{model_name}\n')
+    
+    exp = Experiment(model_name, model_batch_sizes[model_name])
+
+
     exp.init_opt_states()
     compiled_fn = compile(exp.train_step, exp.graph_transformation)
     compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
