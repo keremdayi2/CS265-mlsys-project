@@ -345,14 +345,14 @@ class GraphProfiler(fx.Interpreter):
             for i, r in enumerate(result_unpacked):
                 if not r.storage().data_ptr() in arg_ptrs:
                     # means this memory is new allocated
-                    size_bytes += r.nelement() * r.element_size()
+                    size_bytes += r.untyped_storage().nbytes()
                 # else:
                 #     sys.stderr.write(f'Found overlapping memory in {n.name}\n')
 
 
         elif n.op == OP.PLACEHOLDER:
             if isinstance(result, torch.Tensor):
-                size_bytes = result.nelement() * result.element_size()
+                size_bytes = result.untyped_storage().nbytes()
             else:
                 sys.stderr.write(f'{n.name}: got unhandled placeholder. Got {type(result)}\n')
         else:

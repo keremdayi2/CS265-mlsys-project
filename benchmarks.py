@@ -120,7 +120,7 @@ class Experiment:
 
 
 if __name__ == "__main__":
-    model_idx = 2
+    model_idx = 1
     model_name = model_names[model_idx]
     sys.stderr.write(f'{model_name}\n')
     
