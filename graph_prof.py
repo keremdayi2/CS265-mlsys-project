@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict
+from typing import Dict, Tuple
 import torch
 import torch.fx as fx
 
@@ -47,6 +47,7 @@ class NodeStats:
 
     # memory related variables
     size : List[int] = field(default_factory=list)
+    effective_size : List[int] = field(default_factory=list)
 
     # cuda
     cuda_memory : int | None = None
@@ -327,13 +328,16 @@ class GraphProfiler(fx.Interpreter):
 
         return result_tensors
 
-    def _get_memory_usage(self, n:fx.Node, result : Any) -> int:
+    def _get_memory_usage(self, n:fx.Node, result : Any) -> Tuple[int, int]:
+        # return the size in the first element, and the 'effective size' in the second
         # we can check whether new memory was allocated using the following pattern
         # x.storage().data_ptr() == y.storage().data_ptr()
         # if no new-memory was allocated, we can set memory usage to 0
 
         args = n.args
+
         size_bytes = 0
+        effective_bytes = 0
 
         # TODO: Add minimum pytorch allocation
 
@@ -349,12 +353,11 @@ class GraphProfiler(fx.Interpreter):
             arg_ptrs = set(arg_ptrs)
 
             # sys.stderr.write(f'{arg_ptrs}\n')
-
-            size_bytes = 0
             for i, r in enumerate(result_unpacked):
+                size_bytes += r.untyped_storage().nbytes()
                 if not r.storage().data_ptr() in arg_ptrs:
                     # means this memory is new allocated
-                    size_bytes += r.untyped_storage().nbytes()
+                    effective_bytes += r.untyped_storage().nbytes()
                 # else:
                 #     sys.stderr.write(f'Found overlapping memory in {n.name}\n')
 
@@ -362,12 +365,13 @@ class GraphProfiler(fx.Interpreter):
         elif n.op == OP.PLACEHOLDER:
             if isinstance(result, torch.Tensor):
                 size_bytes = result.untyped_storage().nbytes()
+                effective_bytes = size_bytes
             else:
                 sys.stderr.write(f'{n.name}: got unhandled placeholder. Got {type(result)}\n')
         else:
             sys.stderr.write(f'{n.name}: got unhandled operation. Got {n.op}\n')
 
-        return size_bytes
+        return (size_bytes, effective_bytes)
 
     def run(
         self,
@@ -424,10 +428,11 @@ class GraphProfiler(fx.Interpreter):
 
         # now, we start calculating the memory allocated by this node
         # the memory usage function accounts for reused memory
-        size_bytes = self._get_memory_usage(n, result)
+        size_bytes, effective_size = self._get_memory_usage(n, result)
 
         if size_bytes is not None:
             self.name_to_stats[n.name].size.append(size_bytes)
+            self.name_to_stats[n.name].effective_size.append(effective_size)
 
         # If you are in the forward pass region and if the current node 'n' is
         # the last user of a feature map 'x', then it should be swapped out to
@@ -443,11 +448,12 @@ class GraphProfiler(fx.Interpreter):
         for k in self.name_to_stats.keys():
             stats = self.name_to_stats[k]
             self.name_to_stats[k].size_agg = float(torch.Tensor(stats.size).mean().item())
+            self.name_to_stats[k].effective_size_agg = float(torch.Tensor(stats.effective_size).mean().item())
             self.name_to_stats[k].runtime_agg = float(torch.Tensor(stats.runtime).mean().item())
 
     def print_stats(self) -> None:
         columns = ['rank', 'name', 'op', 'target',
-         'all_input_nodes', 'users', 'size', 
+         'all_input_nodes', 'users', 'size', 'effective_size', 
          'runtime', 'type', 'mem_cuda',
           'mem_cuda_pre', 'mem_cuda_peak',
            'first_forward', 'last_forward', 'first_backward', 'last_backward', 'last_use']
@@ -465,6 +471,7 @@ class GraphProfiler(fx.Interpreter):
             row.append(n.all_input_nodes)
             row.append(n.users)
             row.append(stats.size_agg)
+            row.append(stats.effective_size_agg)
             row.append(stats.runtime_agg)
             row.append(stats.type)
             row.append(stats.cuda_memory)
@@ -494,7 +501,9 @@ class GraphProfiler(fx.Interpreter):
         # set all the measurements array to empty for resetting
         for node in self.module.graph.nodes:
             self.name_to_stats[node.name].size = []
+            self.name_to_stats[node.name].effective_size = []
             self.name_to_stats[node.name].runtime = []
 
             self.name_to_stats[node.name].size_agg = None
+            self.name_to_stats[node.name].effective_size_agg = None
             self.name_to_stats[node.name].runtime_agg = None

@@ -122,7 +122,7 @@ class Experiment:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run benchmarks")
-    parser.add_argument("--model_idx", type=int, help="Model index to run")
+    parser.add_argument("--model_idx", type=int, required=True, help="Model index to run")
 
     args = parser.parse_args()
 
