@@ -37,7 +37,8 @@ class NodeStats:
     rank : int | None = None
     name : str | None = None
     type : NodeType | None = None
-    
+    op : str | None = None
+
     # appearances of this node
     first_forward : int | None = None
     last_forward : int | None = None
@@ -47,6 +48,7 @@ class NodeStats:
 
     # memory related variables
     size : List[int] = field(default_factory=list)
+    size_agg : int | None = None
     effective_size : List[int] = field(default_factory=list)
 
     # cuda
@@ -54,12 +56,15 @@ class NodeStats:
     cuda_memory_pre : int | None = None
     cuda_memory_max : int | None = None
 
-
     # runtime
     runtime : List[float] = field(default_factory=list)
+    runtime_agg : float | None = None
 
     # result related
     result_ptrs : List[int] = field(default_factory=int)
+
+    # src related
+    srcs : List[str]  = field(default_factory=str)
 
 # This is an example graph_profiler that extends the fx.Interpreter class, it
 # will perform graph execution by running the graph node by node.
@@ -118,7 +123,10 @@ class GraphProfiler(fx.Interpreter):
         # 3) find the parameters and gradients as well
         # 4) initalize name_to_node mapping
         for rank, node in enumerate(self.module.graph.nodes):
-            self.name_to_stats[node.name] = NodeStats(rank = rank, name = node.name)
+            self.name_to_stats[node.name] = NodeStats(rank = rank,
+                                                       name = node.name,
+                                                         op = node.op,
+                                                           srcs = set(n.name for n in node.all_input_nodes))
 
             # set events
             if node.target == torch.ops.separator.sep.default:

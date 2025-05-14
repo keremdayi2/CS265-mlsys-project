@@ -1,5 +1,7 @@
 import importlib
 from typing import Any, Dict, List
+import data_utils
+import tabulate
 
 import torch
 import torch.nn as nn
@@ -13,6 +15,7 @@ from torch.testing._internal.distributed._tensor.common_dtensor import (
 from torchvision.models import resnet18, resnet50
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
+from recompute import RecomputePolicy
 
 import sys
 import argparse
@@ -112,6 +115,16 @@ class Experiment:
                 graph_profiler.run(*args)
             graph_profiler.aggregate_stats()
             graph_profiler.print_stats()
+
+            # create recompute policy here
+            recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
+            recomputation_list = recompute_policy.get_recomputation(0.65*1e9)
+
+            obj_list = data_utils.obj_list_to_array(list(recomputation_list))
+            maxcolwidths = [12] * len(obj_list[0])
+            print(tabulate.tabulate(obj_list, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
+
+
 
         return gm
 
