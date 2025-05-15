@@ -117,6 +117,7 @@ class GraphProfiler(fx.Interpreter):
 
         self.name_to_stats = {}
         self.name_to_node : Dict[str, fx.Node] = {}
+        self.total_runtime_lst = []
 
         # here we 
         # 1) find where the SEP operator appears
@@ -459,6 +460,8 @@ class GraphProfiler(fx.Interpreter):
             self.name_to_stats[k].size_agg = float(torch.Tensor(stats.size).mean().item())
             self.name_to_stats[k].effective_size_agg = float(torch.Tensor(stats.effective_size).mean().item())
             self.name_to_stats[k].runtime_agg = float(torch.Tensor(stats.runtime).mean().item())
+        
+        self.total_runtime = float(torch.Tensor(self.total_runtime_lst).mean().item())
 
     def print_stats(self, filename : str) -> None:
         columns = ['rank', 'name', 'op', 'target',
@@ -516,3 +519,6 @@ class GraphProfiler(fx.Interpreter):
             self.name_to_stats[node.name].size_agg = None
             self.name_to_stats[node.name].effective_size_agg = None
             self.name_to_stats[node.name].runtime_agg = None
+        
+
+        self.total_runtime_lst = []
