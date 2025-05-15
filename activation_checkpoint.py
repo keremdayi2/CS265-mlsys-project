@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.fx as fx
-from typing import Dict
+from typing import Dict, List
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch._functorch.partitioners import _extract_graph_with_inputs_outputs
 from graph_tracer import SEPFunction
+
+from recompute import *
 
 
 # We define a custom function that takes in two weight matrices that require
@@ -57,7 +59,7 @@ def get_name_to_node_map(gm: fx.GraphModule) -> Dict[str, fx.Node]:
     return name_to_node
 
 
-def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
+def activation_checkpointing(gm: fx.GraphModule, recompute_list : List[RecomputeNode] | None = None) -> fx.GraphModule:
     # NOTE: You need to create the function for your project and call it inside
     # the graph_transformation function after performing graph profiling.
 
@@ -79,6 +81,54 @@ def activation_checkpointing(gm: fx.GraphModule) -> fx.GraphModule:
     # intermediate nodes that are checkpointed.
 
     name_to_node = get_name_to_node_map(gm)
+
+    if recompute_list is not None:
+        # for each node that needs to be recomputed, 
+        # insert the recomputation graph before the first backward use
+        for recomp_node in recompute_list:
+            first_back_access = name_to_node[recomp_node.first_bw]
+            nodes_required_to_recompute = [name_to_node[src] for src in recomp_node.recomp_srcs] # these are already names
+            node_to_recompute = [name_to_node[recomp_node.name]]
+            node_to_recompute_names = [recomp_node.name] 
+            
+            # get the recomputation subgraph using these inputs and 
+            # outputs
+            recompute_subgraph = _extract_graph_with_inputs_outputs(
+                joint_graph=gm.graph,
+                inputs=nodes_required_to_recompute,
+                outputs=node_to_recompute,
+            )
+
+            print("Extracted recomputation sub-graph: ")
+            recompute_subgraph.print_tabular()
+
+            with gm.graph.inserting_before(first_back_access):
+                for n in recompute_subgraph.nodes:
+                    if n.op == "placeholder" or n.op == "output":
+                        continue
+                    # Copy the nodes of the new sub-graph to old graph and transform its
+                    # inputs to match the old-graph inputs. The arg_transform function
+                    # will pass the input arguments of the new node and will expect a
+                    # mapping to the nodes of the old graph.
+                    new_node = gm.graph.node_copy(
+                        n, arg_transform=lambda arg: name_to_node[arg.name]
+                    )
+
+                    if n.name in node_to_recompute_names:
+                        old_node = name_to_node[n.name]
+                        # Replace all the uses of the old node with new recomputation node
+                        replace_subsequent_uses_of(
+                            gm.graph, old_node=old_node, new_node=new_node
+                        )
+                    
+                    # Add the new node to our name to node mapping
+                    name_to_node[n.name] = new_node
+
+        gm.graph.lint()
+        gm.recompile()
+        return gm
+    
+    # if no recomputation list was given, default to starter code
     first_back_access = name_to_node["t"]
     node_to_recompute = [name_to_node["relu"]]
     node_to_recompute_names = ["relu"]

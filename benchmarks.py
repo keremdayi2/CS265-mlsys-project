@@ -17,6 +17,8 @@ from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 from recompute import RecomputePolicy
 
+from activation_checkpoint import *
+
 import sys
 import argparse
 
@@ -116,19 +118,26 @@ class Experiment:
             graph_profiler.aggregate_stats()
             graph_profiler.print_stats()
 
-            # create recompute policy here
-            recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
-            recomputation_list = recompute_policy.get_recomputation(0.7*1e9)
+        # create recompute policy here
+        recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
+        recomputation_list = recompute_policy.get_recomputation(0.7*1e9)
 
-            # obj_list = data_utils.obj_list_to_array(list(recomputation_list))
-            # maxcolwidths = [12] * len(obj_list[0])
-            # print(tabulate.tabulate(obj_list, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
+        sys.stderr.write(f'{recomputation_list[0]}\n')
+        print('Recompute data')
+        print(f'Number of nodes {len(recomputation_list)}')
 
-            print('Recompute data')
-            print(f'Number of nodes {len(recomputation_list)}')
+        # obj_list = data_utils.obj_list_to_array(list(recomputation_list))
+        # maxcolwidths = [12] * len(obj_list[0])
+        # print(tabulate.tabulate(obj_list, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
 
+        # print("PRE-TRANSFORM")
+        # gm.graph.print_tabular()
 
-
+        gm = activation_checkpointing(gm, recomputation_list)
+        
+        # print("POST-TRANSFORM")
+        # gm.graph.print_tabular()
+        
         return gm
 
     def run(self):
@@ -149,7 +158,7 @@ if __name__ == "__main__":
     
     exp = Experiment(model_name, model_batch_sizes[model_name])
 
-
     exp.init_opt_states()
     compiled_fn = compile(exp.train_step, exp.graph_transformation)
+    
     compiled_fn(exp.model, exp.optimizer, exp.example_inputs)

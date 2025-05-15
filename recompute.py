@@ -33,10 +33,13 @@ class RecomputeStats(NodeStats):
 
     def __eq__(self, other):
         return (self.name == other.name)
-    
-    # def __repr__(self): # use this for tabulate()
-    #     return self.name
 
+@dataclass
+class RecomputeNode:    
+    name : str
+    first_bw : str
+    recomp_srcs : List[str] = field(default_factory=list)
+        
 # node stats should be a sufficient way of computing the recomputation policy
 class RecomputePolicy:
     def __init__(self, nodes: List[NodeStats]):
@@ -66,8 +69,8 @@ class RecomputePolicy:
                     recompute_srcs.update(src.recomp_srcs)
         
         return recompute_srcs
-            
 
+    # return the list 
     def get_recomputation(self, memory_cap : int):
         # initially add all intermediate nodes (nodes used in forward pass 
         # and gradient computation) in the candidates
@@ -127,7 +130,8 @@ class RecomputePolicy:
                 
                 future_cand.recompute_ratio = future_cand.size_agg / future_cand.total_compute_time
         
-        return recompute_nodes
+        # return the parsed list
+        return [RecomputeNode(n.name, n.first_backward, [src.name for src in n.recomp_srcs]) for n in recompute_nodes]
 
 
     # iterate over all candidates and find the one with the maximum recompute ratio

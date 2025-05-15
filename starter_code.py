@@ -13,6 +13,9 @@ import torch.nn as nn
 from graph_prof import GraphProfiler
 from graph_tracer import SEPFunction, compile
 
+from activation_checkpoint import *
+from recompute import *
+
 # This is the dummy model that is for use in starter code. But we will
 # experiment with Resnet and Transformer model.
 
@@ -61,18 +64,31 @@ def train_step(
 # to run the graph node by node, more explanation in graph_prof.py.
 
 
-def graph_transformation(gm: fx.GraphModule, args: Any) -> fx.GraphModule:
-    print(gm.graph)
-    graph_profiler = GraphProfiler(gm)
+def graph_transformation(self, gm: fx.GraphModule, args: Any) -> fx.GraphModule:
+    print(gm.graph.print_tabular())
     warm_up_iters, profile_iters = 2, 3
+    graph_profiler = GraphProfiler(gm)
+
     with torch.no_grad():
         for _ in range(warm_up_iters):
             graph_profiler.run(*args)
         graph_profiler.reset_stats()
+
         for _ in range(profile_iters):
             graph_profiler.run(*args)
-    graph_profiler.aggregate_stats()
-    graph_profiler.print_stats()
+        graph_profiler.aggregate_stats()
+        graph_profiler.print_stats()
+
+    # create recompute policy here
+    recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
+    recomputation_list = recompute_policy.get_recomputation(0.7*1e9)
+
+    sys.stderr.write(f'{recomputation_list[0]}\n')
+    print('Recompute data')
+    print(f'Number of nodes {len(recomputation_list)}')
+
+    gm = activation_checkpointing(gm, recomputation_list)
+
     return gm
 
 

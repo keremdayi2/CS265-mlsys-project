@@ -369,14 +369,13 @@ class GraphProfiler(fx.Interpreter):
                 # else:
                 #     sys.stderr.write(f'Found overlapping memory in {n.name}\n')
 
-
         elif n.op == OP.PLACEHOLDER:
             if isinstance(result, torch.Tensor):
                 size_bytes = result.untyped_storage().nbytes()
                 effective_bytes = size_bytes
             else:
                 sys.stderr.write(f'{n.name}: got unhandled placeholder. Got {type(result)}\n')
-        else:
+        elif n.op != OP.OUTPUT:
             sys.stderr.write(f'{n.name}: got unhandled operation. Got {n.op}\n')
 
         return (size_bytes, effective_bytes)
