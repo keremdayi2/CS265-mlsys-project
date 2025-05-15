@@ -33,23 +33,40 @@ class RecomputeStats(NodeStats):
 
     def __eq__(self, other):
         return (self.name == other.name)
+    
+    # def __repr__(self): # use this for tabulate()
+    #     return self.name
 
 # node stats should be a sufficient way of computing the recomputation policy
 class RecomputePolicy:
     def __init__(self, nodes: List[NodeStats]):
         # create a list of nodes with recomputation stats
         # that inherit the properties of nodestats but offer additional functionality
-        self.nodes = [RecomputeStats(node) for node in nodes]
+        self.nodes : List[RecomputeStats] = [RecomputeStats(node) for node in nodes]
         self.name_to_rank = {node.name : node.rank for node in self.nodes}
         self.name_to_stats = {node.name : node for node in self.nodes}
 
         for n in self.nodes:
-            n.recomp_srcs = set()
-            for src in map(lambda x: self.name_to_stats[x], n.srcs):
-                if src.is_intermediate or src.op == 'placeholder':
-                    n.recomp_srcs.add(src)
+            n.recomp_srcs = self._get_srcs(n, set())
+
+    def _get_srcs(self, n : RecomputeStats, recompute_srcs: Set[RecomputeStats]):
+        # look at the immediate dependency nodes
+        for src in map(lambda x: self.name_to_stats[x], n.inputs):
+            # if these are intermediate or parameters, then can add to our set
+            # otherwise, recurse to get their depencendices
+            if src.is_intermediate or src.op == 'placeholder':
+                recompute_srcs.add(src)
+            else:
+                assert src.rank < n.rank
+                # if we already computed the srcs, then we can use those
+                # else, we need to recursively find the srcs
+                if src.recomp_srcs is None:
+                    self._get_srcs(src, recompute_srcs)
                 else:
-                    n.recomp_srcs.update(src.recomp_srcs)
+                    recompute_srcs.update(src.recomp_srcs)
+        
+        return recompute_srcs
+            
 
     def get_recomputation(self, memory_cap : int):
         # initially add all intermediate nodes (nodes used in forward pass 
@@ -63,7 +80,9 @@ class RecomputePolicy:
         while len(candidates) > 0: 
             # check peak memory to see if we can stop
             _, peak_mem = self._simulate_memory(recompute_nodes)
+            # sys.stderr.write(f'peak_mem: {peak_mem}\n')
             if memory_cap > peak_mem:
+                
                 break
 
             # add the max recomputation_ratio candidate 
@@ -123,12 +142,19 @@ class RecomputePolicy:
 
 
     # simulate memory
+    # returns the memory usage array over time and 
+    # the peak memory during forward and backward passes
     def _simulate_memory(self, recompute_nodes : List[RecomputeStats]) -> Tuple[np.array, float]:
         memory_usage = np.zeros(len(self.nodes))
 
         # TODO: compute max memory over the forward and backward passes
         # (ignore the optimization step since we cannot do anything about that)
-        forward_start, backward_start = None, None
+        forward_start, backward_end = len(self.nodes), 0
+
+        for node in self.nodes:
+            if node.is_intermediate:
+                forward_start = min(forward_start, self.name_to_rank[node.first_forward])
+                backward_end = max(backward_end, self.name_to_rank[node.last_backward])
 
         for node in self.nodes:
             # if this node is not being recomputed,
@@ -146,6 +172,7 @@ class RecomputePolicy:
 
                 memory_usage[start_fw:end_fw] += node.size_agg
                 memory_usage[start_bw:end_bw] += node.size_agg
+                continue
 
             start = node.rank
 
@@ -162,7 +189,7 @@ class RecomputePolicy:
             
             memory_usage[start:end] += node.size_agg
         
-        return memory_usage, memory_usage.max()
+        return memory_usage, memory_usage[forward_start:backward_end].max()
     
 if __name__ == '__main__':
     print('Testing recompute')

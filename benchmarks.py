@@ -118,11 +118,14 @@ class Experiment:
 
             # create recompute policy here
             recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
-            recomputation_list = recompute_policy.get_recomputation(0.65*1e9)
+            recomputation_list = recompute_policy.get_recomputation(0.7*1e9)
 
-            obj_list = data_utils.obj_list_to_array(list(recomputation_list))
-            maxcolwidths = [12] * len(obj_list[0])
-            print(tabulate.tabulate(obj_list, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
+            # obj_list = data_utils.obj_list_to_array(list(recomputation_list))
+            # maxcolwidths = [12] * len(obj_list[0])
+            # print(tabulate.tabulate(obj_list, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
+
+            print('Recompute data')
+            print(f'Number of nodes {len(recomputation_list)}')
 
 
 

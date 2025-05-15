@@ -3,8 +3,8 @@ from dataclasses import dataclass, fields
 def obj_list_to_array(lst):
     if len(lst) == 0:
         return []
-    
-    keys = [field.name for field in fields(lst[0])]
+
+    keys = list(filter(lambda x: x[:2] != '__' and x[-2:] != '__', dir(lst[0])))
 
     ret = [keys]
 

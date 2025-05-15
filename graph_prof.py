@@ -64,7 +64,7 @@ class NodeStats:
     result_ptrs : List[int] = field(default_factory=int)
 
     # src related
-    srcs : List[str]  = field(default_factory=str)
+    inputs : List[str]  = field(default_factory=str)
 
 # This is an example graph_profiler that extends the fx.Interpreter class, it
 # will perform graph execution by running the graph node by node.
@@ -126,7 +126,7 @@ class GraphProfiler(fx.Interpreter):
             self.name_to_stats[node.name] = NodeStats(rank = rank,
                                                        name = node.name,
                                                          op = node.op,
-                                                           srcs = set(n.name for n in node.all_input_nodes))
+                                                           inputs = set(n.name for n in node.all_input_nodes))
 
             # set events
             if node.target == torch.ops.separator.sep.default:
