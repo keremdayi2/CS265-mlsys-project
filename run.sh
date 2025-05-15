@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --job-name=cs265
 #SBATCH --partition gpu_requeue
-#SBATCH --gres=gpu:nvidia_a40:1
+#SBATCH --gres=gpu:nvidia_a100-sxm4-40gb:1
 #SBATCH --mem=32G
 #SBATCH -t 0-6:00 
 #SBATCH -c 4
@@ -20,4 +20,5 @@ export MASTER_ADDR="127.0.0.1"
 export MASTER_PORT=29500
 
 cd /n/home04/keremdayi/CS265-mlsys-project
-python starter_code.py
+
+bash experiments.sh

@@ -28,19 +28,23 @@ model_names: List[str] = [
     "Resnet50",
 ]
 
-model_batch_sizes: Dict[str, int] = {
-    "Transformer": 4,
-    "Resnet18": 16,
-    "Resnet50": 4,
+model_batch_sizes: Dict[str, List[int]] = {
+    "Transformer": [256, 512, 1024, 2048],
+    "Resnet18": [16, 32, 64, 128],
+    "Resnet50": [16, 32, 64, 128],
 }
 
-
 class Experiment:
-    def __init__(self, model_name: str, batch_size: int, extra_args=[]):
+    def __init__(self, model_name: str, batch_size: int, extra_args={}):
         assert model_name in model_names, f"Model {model_name} not found in model names {model_names}"
         dev = torch.device("cuda")
         self.model_name = model_name
         self.batch_size = batch_size
+        
+        if 'memory_cap' in extra_args.keys():
+            self.memory_cap = extra_args['memory_cap'] * 1e9
+        else:
+            self.memory_cap = 40 * 1e9
 
         if self.model_name == "Transformer":
 
@@ -105,7 +109,7 @@ class Experiment:
 
     def graph_transformation(self, gm: fx.GraphModule, args: Any) -> fx.GraphModule:
         print(gm.graph.print_tabular())
-        warm_up_iters, profile_iters = 2, 3
+        warm_up_iters, profile_iters = 4, 8
         graph_profiler = GraphProfiler(gm)
 
         with torch.no_grad():
@@ -116,15 +120,7 @@ class Experiment:
             for _ in range(profile_iters):
                 graph_profiler.run(*args)
             graph_profiler.aggregate_stats()
-            graph_profiler.print_stats()
-
-        # create recompute policy here
-        recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
-        recomputation_list = recompute_policy.get_recomputation(0.7*1e9)
-
-        sys.stderr.write(f'{recomputation_list[0]}\n')
-        print('Recompute data')
-        print(f'Number of nodes {len(recomputation_list)}')
+            graph_profiler.print_stats(f'{model_name}_{batch_size}_pre')
 
         # obj_list = data_utils.obj_list_to_array(list(recomputation_list))
         # maxcolwidths = [12] * len(obj_list[0])
@@ -133,11 +129,26 @@ class Experiment:
         # print("PRE-TRANSFORM")
         # gm.graph.print_tabular()
 
+
+        # create recompute policy here
+        recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
+        recomputation_list = recompute_policy.get_recomputation(self.memory_cap)
+
+        sys.stderr.write(f'Number of nodes to recompute {len(recomputation_list)}\n')
         gm = activation_checkpointing(gm, recomputation_list)
-        
-        # print("POST-TRANSFORM")
-        # gm.graph.print_tabular()
-        
+        recompute_profiler = GraphProfiler(gm)
+
+        # re-run the profiler to gather statistics on the new computational graph
+        with torch.no_grad():
+            for _ in range(warm_up_iters):
+                recompute_profiler.run(*args)
+            recompute_profiler.reset_stats()
+
+            for _ in range(profile_iters):
+                   recompute_profiler.run(*args)
+            recompute_profiler.aggregate_stats()
+            recompute_profiler.print_stats(f'{model_name}_{batch_size}_post')
+    
         return gm
 
     def run(self):
@@ -148,17 +159,29 @@ class Experiment:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run benchmarks")
     parser.add_argument("--model_idx", type=int, required=True, help="Model index to run")
+    parser.add_argument("--batch_idx", type=int, required=True, help="Model index to run")
+    parser.add_argument("--mem_cap", type=float, required=True, help="Model index to run")
 
     args = parser.parse_args()
 
     model_idx = args.model_idx
+    batch_idx = args.batch_idx
+    memory_cap = args.mem_cap
 
+    # parse experiment arguments
     model_name = model_names[model_idx]
-    sys.stderr.write(f'{model_name}\n')
-    
-    exp = Experiment(model_name, model_batch_sizes[model_name])
+    batch_size = model_batch_sizes[model_name][batch_idx]
+    sys.stderr.write(f'Running experiment. Model: {model_name}, Batch size: {batch_size} Memory cap: {memory_cap}\n')
+
+    exp = Experiment(model_name, batch_size, {'memory_cap' : memory_cap})
 
     exp.init_opt_states()
     compiled_fn = compile(exp.train_step, exp.graph_transformation)
-    
+
+    torch.cuda.reset_peak_memory_stats()
+    torch.cuda.empty_cache()
+
+    # test model to get sample output
     compiled_fn(exp.model, exp.optimizer, exp.example_inputs)
+    max_memory = torch.cuda.max_memory_allocated()
+    sys.stderr.write(f'max_memory: {max_memory/1e9:0.2f}GB\n')

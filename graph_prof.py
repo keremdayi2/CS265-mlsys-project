@@ -458,7 +458,7 @@ class GraphProfiler(fx.Interpreter):
             self.name_to_stats[k].effective_size_agg = float(torch.Tensor(stats.effective_size).mean().item())
             self.name_to_stats[k].runtime_agg = float(torch.Tensor(stats.runtime).mean().item())
 
-    def print_stats(self) -> None:
+    def print_stats(self, filename : str) -> None:
         columns = ['rank', 'name', 'op', 'target',
          'all_input_nodes', 'users', 'size', 'effective_size', 
          'runtime', 'type', 'mem_cuda',
@@ -493,7 +493,7 @@ class GraphProfiler(fx.Interpreter):
 
         df = pd.DataFrame(data, columns=columns)
 
-        df.to_csv('out/graph_profiler.csv', index=False)
+        df.to_csv(f'out/{filename}.csv', index=False)
 
         # maxcolwidths = [12] * len(columns)
 
