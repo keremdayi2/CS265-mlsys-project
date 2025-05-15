@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 
 logs
+out
 
 *.py[cod]
 *$py.class
