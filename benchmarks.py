@@ -31,7 +31,7 @@ model_names: List[str] = [
 model_batch_sizes: Dict[str, List[int]] = {
     "Transformer": [256, 512, 1024, 2048],
     "Resnet18": [16, 32, 64, 128],
-    "Resnet50": [16, 32, 64, 128],
+    "Resnet50": [16, 32, 64, 128, 256],
 }
 
 class Experiment:
@@ -122,16 +122,8 @@ class Experiment:
             graph_profiler.aggregate_stats()
             graph_profiler.print_stats(f'{model_name}_{batch_size}_pre')
 
-        # obj_list = data_utils.obj_list_to_array(list(recomputation_list))
-        # maxcolwidths = [12] * len(obj_list[0])
-        # print(tabulate.tabulate(obj_list, tablefmt="grid", maxcolwidths = maxcolwidths, floatfmt=".2f"))
-
-        # print("PRE-TRANSFORM")
-        # gm.graph.print_tabular()
-
-
         # create recompute policy here
-        recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()])
+        recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()], graph_profiler.name_to_node)
         recomputation_list = recompute_policy.get_recomputation(self.memory_cap)
 
         sys.stderr.write(f'Number of nodes to recompute {len(recomputation_list)}\n')

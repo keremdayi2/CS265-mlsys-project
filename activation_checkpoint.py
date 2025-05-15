@@ -85,14 +85,19 @@ def activation_checkpointing(gm: fx.GraphModule, recompute_list : List[Recompute
     if recompute_list is not None:
         # for each node that needs to be recomputed, 
         # insert the recomputation graph before the first backward use
+        
         for recomp_node in recompute_list:
-            first_back_access = name_to_node[recomp_node.first_bw]
-            nodes_required_to_recompute = [name_to_node[src] for src in recomp_node.recomp_srcs] # these are already names
-            node_to_recompute = [name_to_node[recomp_node.name]]
+            first_back_access = recomp_node.first_bw
+            nodes_required_to_recompute = recomp_node.recomp_srcs
+            node_to_recompute = [recomp_node.node]
             node_to_recompute_names = [recomp_node.name] 
             
             # get the recomputation subgraph using these inputs and 
             # outputs
+            sys.stderr.write(f'{recomp_node}\n')
+            sys.stderr.write(f'{node_to_recompute}\n')
+            sys.stderr.write(f'{nodes_required_to_recompute}\n\n')
+
             recompute_subgraph = _extract_graph_with_inputs_outputs(
                 joint_graph=gm.graph,
                 inputs=nodes_required_to_recompute,

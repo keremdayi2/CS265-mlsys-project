@@ -116,6 +116,7 @@ class GraphProfiler(fx.Interpreter):
         self.op_start_rank = None # where the operations start (i.e. call_function)
 
         self.name_to_stats = {}
+        self.name_to_node : Dict[str, fx.Node] = {}
 
         # here we 
         # 1) find where the SEP operator appears
@@ -127,6 +128,7 @@ class GraphProfiler(fx.Interpreter):
                                                        name = node.name,
                                                          op = node.op,
                                                            inputs = set(n.name for n in node.all_input_nodes))
+            self.name_to_node[node.name] = node
 
             # set events
             if node.target == torch.ops.separator.sep.default:

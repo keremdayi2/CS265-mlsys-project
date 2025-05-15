@@ -3,6 +3,9 @@ from typing import List, Tuple, Set
 from dataclasses import dataclass, fields
 import numpy as np
 
+import torch.fx as fx
+import torch
+
 from graph_prof import *
 
 
@@ -37,17 +40,20 @@ class RecomputeStats(NodeStats):
 @dataclass
 class RecomputeNode:    
     name : str
-    first_bw : str
-    recomp_srcs : List[str] = field(default_factory=list)
+    node : fx.Node
+    first_bw : fx.Node
+    first_bw_rank : int
+    recomp_srcs : List[fx.Node] = field(default_factory=list)
         
 # node stats should be a sufficient way of computing the recomputation policy
 class RecomputePolicy:
-    def __init__(self, nodes: List[NodeStats]):
+    def __init__(self, nodes: List[NodeStats], name_to_node : Dict[str, fx.Node]):
         # create a list of nodes with recomputation stats
         # that inherit the properties of nodestats but offer additional functionality
         self.nodes : List[RecomputeStats] = [RecomputeStats(node) for node in nodes]
         self.name_to_rank = {node.name : node.rank for node in self.nodes}
         self.name_to_stats = {node.name : node for node in self.nodes}
+        self.name_to_node = name_to_node
 
         for n in self.nodes:
             n.recomp_srcs = self._get_srcs(n, set())
@@ -70,13 +76,16 @@ class RecomputePolicy:
         
         return recompute_srcs
 
+    def check_recompute_list(self, recompute_list : List[RecomputeNode]):
+        pass
+
     # return the list 
     def get_recomputation(self, memory_cap : int):
         # initially add all intermediate nodes (nodes used in forward pass 
         # and gradient computation) in the candidates
         # and initialize recompute nodes as empty
         candidates : Set[RecomputeStats] = set([n for n in self.nodes if n.is_intermediate])
-        recompute_nodes : Set[RecomputeStats] = set()
+        recompute_nodes : List[RecomputeStats] = []
 
         # continue until no candidates left
         # or we achieved our memory goal
@@ -103,7 +112,7 @@ class RecomputePolicy:
                     rp.recomp_time += cand.recomp_time
                     recomp_cnt += 1
 
-            recompute_nodes.add(cand)
+            recompute_nodes.append(cand)
             # update all future candidates
 
             # this part is from the paper 
@@ -130,8 +139,10 @@ class RecomputePolicy:
                 
                 future_cand.recompute_ratio = future_cand.size_agg / future_cand.total_compute_time
         
+        if len(candidates) == 0:
+            sys.stderr.write('WARNING: recomputation candidates terminated before memory goal achieved\n')
         # return the parsed list
-        return [RecomputeNode(n.name, n.first_backward, [src.name for src in n.recomp_srcs]) for n in recompute_nodes]
+        return [RecomputeNode(n.name, self.name_to_node[n.name], self.name_to_node[n.first_backward], self.name_to_rank[n.first_backward], [self.name_to_node[src.name] for src in n.recomp_srcs]) for n in recompute_nodes]
 
 
     # iterate over all candidates and find the one with the maximum recompute ratio
@@ -193,7 +204,8 @@ class RecomputePolicy:
             
             memory_usage[start:end] += node.size_agg
         
-        return memory_usage, memory_usage[forward_start:backward_end].max()
+        # return memory_usage, memory_usage[forward_start:backward_end].max()
+        return memory_usage, memory_usage.max()
     
 if __name__ == '__main__':
     print('Testing recompute')
