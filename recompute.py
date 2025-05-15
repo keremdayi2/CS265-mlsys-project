@@ -87,21 +87,20 @@ class RecomputePolicy:
         candidates : Set[RecomputeStats] = set([n for n in self.nodes if n.is_intermediate])
         recompute_nodes : List[RecomputeStats] = []
 
+        _, peak_mem = self._simulate_memory(recompute_nodes)
+        sys.stderr.write(f"Initial peak memory usage: {peak_mem/1e9:.2f}GB\n")
+
         # continue until no candidates left
         # or we achieved our memory goal
-        while len(candidates) > 0: 
+        while len(candidates) > 0 and peak_mem > memory_cap: 
             # check peak memory to see if we can stop
             _, peak_mem = self._simulate_memory(recompute_nodes)
-            # sys.stderr.write(f'peak_mem: {peak_mem}\n')
-            if memory_cap > peak_mem:
-                
-                break
 
             # add the max recomputation_ratio candidate 
             # to recompute nodes and remove from candidates
             cand = self._max_recomp_candidate(candidates)
-            
             candidates.remove(cand)
+            
             # update existing recomputations
             recomp_cnt = 1
             for rp in recompute_nodes:
@@ -150,10 +149,10 @@ class RecomputePolicy:
         max_candidate = next(iter(candidates))
 
         for c in candidates:
-            if c.recompute_ratio > max_candidate.recompute_count:
+            if c.recompute_ratio > max_candidate.recompute_ratio:
                 max_candidate = c
 
-        return c
+        return max_candidate
 
 
     # simulate memory
@@ -187,22 +186,21 @@ class RecomputePolicy:
 
                 memory_usage[start_fw:end_fw] += node.size_agg
                 memory_usage[start_bw:end_bw] += node.size_agg
-                continue
+            else:
+                start = node.rank
 
-            start = node.rank
+                # for placeholders, activity starts at 0
+                if node.op == 'placeholder':
+                    start = 0
+                
+                end = len(self.nodes)
 
-            # for placeholders, activity starts at 0
-            if node.op == 'placeholder':
-                start = 0
-            
-            end = len(self.nodes)
-
-            # if there is a last use for this node, set 
-            # that as the end
-            if not node.last_use is None:
-                end = self.name_to_rank[node.last_use]
-            
-            memory_usage[start:end] += node.size_agg
+                # if there is a last use for this node, set 
+                # that as the end
+                if node.last_use is not None:
+                    end = self.name_to_rank[node.last_use] + 1
+                
+                memory_usage[start:end] += node.size_agg
         
         # return memory_usage, memory_usage[forward_start:backward_end].max()
         return memory_usage, memory_usage.max()

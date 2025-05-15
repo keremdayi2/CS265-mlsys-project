@@ -8,7 +8,6 @@ from graph_tracer import SEPFunction
 
 from recompute import *
 
-
 # We define a custom function that takes in two weight matrices that require
 # gradients to be computed and an input data matrix. The function returns the
 # gradients of the weight matrices with respect to the loss (sum in our
@@ -94,9 +93,9 @@ def activation_checkpointing(gm: fx.GraphModule, recompute_list : List[Recompute
             
             # get the recomputation subgraph using these inputs and 
             # outputs
-            sys.stderr.write(f'{recomp_node}\n')
-            sys.stderr.write(f'{node_to_recompute}\n')
-            sys.stderr.write(f'{nodes_required_to_recompute}\n\n')
+            # sys.stderr.write(f'{recomp_node}\n')
+            # sys.stderr.write(f'{node_to_recompute}\n')
+            # sys.stderr.write(f'{nodes_required_to_recompute}\n\n')
 
             recompute_subgraph = _extract_graph_with_inputs_outputs(
                 joint_graph=gm.graph,

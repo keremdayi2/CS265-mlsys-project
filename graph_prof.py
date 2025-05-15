@@ -61,10 +61,10 @@ class NodeStats:
     runtime_agg : float | None = None
 
     # result related
-    result_ptrs : List[int] = field(default_factory=int)
+    result_ptrs : List[int] = field(default_factory=list)
 
     # src related
-    inputs : List[str]  = field(default_factory=str)
+    inputs : List[str]  = field(default_factory=list)
 
 # This is an example graph_profiler that extends the fx.Interpreter class, it
 # will perform graph execution by running the graph node by node.
