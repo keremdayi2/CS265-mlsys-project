@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --job-name=cs265
 #SBATCH --partition gpu_requeue
-#SBATCH --gres=gpu:nvidia_a100-sxm4-40gb:1
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1
 #SBATCH --mem=32G
 #SBATCH -t 0-6:00 
 #SBATCH -c 4
