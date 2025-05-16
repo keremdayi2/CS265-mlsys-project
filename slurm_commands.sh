@@ -4,6 +4,11 @@ salloc -p gpu_test -t 0-01:00 --mem 16G --gres=gpu:1
 # get h-100
 salloc -p seas_gpu -t 0-01:00 --mem 32G --gpus=nvidia_h100_80gb_hbm3
 
+salloc -p seas_gpu -t 0-01:00 --mem 32G --gpus=nvidia_h100_80gb_hbm3
+salloc -p seas_gpu -t 0-01:00 --mem 16G --gpus=nvidia_a100-sxm4-40gb
+
+
+
 
 mamba activate cs265
 

@@ -80,98 +80,60 @@ def activation_checkpointing(gm: fx.GraphModule, recompute_list : List[Recompute
     # intermediate nodes that are checkpointed.
 
     name_to_node = get_name_to_node_map(gm)
+    assert recompute_list is not None
 
-    if recompute_list is not None:
-        # for each node that needs to be recomputed, 
-        # insert the recomputation graph before the first backward use
+    # for each node that needs to be recomputed, 
+    # insert the recomputation graph before the first backward use
         
-        for recomp_node in recompute_list:
-            first_back_access = recomp_node.first_bw
-            nodes_required_to_recompute = recomp_node.recomp_srcs
-            node_to_recompute = [recomp_node.node]
-            node_to_recompute_names = [recomp_node.name] 
+    recompute_names = []
+
+    for recomp_node in recompute_list:
+        first_back_access = recomp_node.first_bw
+        nodes_required_to_recompute = recomp_node.recomp_srcs
+        node_to_recompute = [recomp_node.node]
+        node_to_recompute_names = [recomp_node.name] 
             
-            # get the recomputation subgraph using these inputs and 
-            # outputs
-            # sys.stderr.write(f'{recomp_node}\n')
-            # sys.stderr.write(f'{node_to_recompute}\n')
-            # sys.stderr.write(f'{nodes_required_to_recompute}\n\n')
+        # get the recomputation subgraph using these inputs and 
+        # outputs
+        # sys.stderr.write(f'{recomp_node}\n')
+        # sys.stderr.write(f'{node_to_recompute}\n')
+        # sys.stderr.write(f'{nodes_required_to_recompute}\n\n')
 
-            recompute_subgraph = _extract_graph_with_inputs_outputs(
-                joint_graph=gm.graph,
-                inputs=nodes_required_to_recompute,
-                outputs=node_to_recompute,
-            )
+        recompute_subgraph = _extract_graph_with_inputs_outputs(
+            joint_graph=gm.graph,
+            inputs=nodes_required_to_recompute,
+            outputs=node_to_recompute,
+        )
 
-            print("Extracted recomputation sub-graph: ")
-            recompute_subgraph.print_tabular()
+        print("Extracted recomputation sub-graph: ")
+        recompute_subgraph.print_tabular()
 
-            with gm.graph.inserting_before(first_back_access):
-                for n in recompute_subgraph.nodes:
-                    if n.op == "placeholder" or n.op == "output":
-                        continue
-                    # Copy the nodes of the new sub-graph to old graph and transform its
-                    # inputs to match the old-graph inputs. The arg_transform function
-                    # will pass the input arguments of the new node and will expect a
-                    # mapping to the nodes of the old graph.
-                    new_node = gm.graph.node_copy(
-                        n, arg_transform=lambda arg: name_to_node[arg.name]
-                    )
-
-                    if n.name in node_to_recompute_names:
-                        old_node = name_to_node[n.name]
-                        # Replace all the uses of the old node with new recomputation node
-                        replace_subsequent_uses_of(
-                            gm.graph, old_node=old_node, new_node=new_node
-                        )
-                    
-                    # Add the new node to our name to node mapping
-                    name_to_node[n.name] = new_node
-
-        gm.graph.lint()
-        gm.recompile()
-        return gm
-    
-    # if no recomputation list was given, default to starter code
-    first_back_access = name_to_node["t"]
-    node_to_recompute = [name_to_node["relu"]]
-    node_to_recompute_names = ["relu"]
-    nodes_required_to_recompute = [name_to_node["w1_1"], name_to_node["x_1"]]
-
-    # NOTE: we cannot directly use 'mm' to recompute 'relu' since 'mm' is not an
-    # intermediate node that is retained (checkpointed).
-
-    # Obtain a sub-graph that recomputes the required nodes
-    recompute_subgraph = _extract_graph_with_inputs_outputs(
-        joint_graph=gm.graph,
-        inputs=nodes_required_to_recompute,
-        outputs=node_to_recompute,
-    )
-    print("Extracted recomputation sub-graph: ")
-    recompute_subgraph.print_tabular()
-
-    # Insert the nodes of the new sub-graph in the old graph before the first
-    # backward access of the node to be recomputed.
-    with gm.graph.inserting_before(first_back_access):
-        for n in recompute_subgraph.nodes:
-            if n.op == "placeholder" or n.op == "output":
-                continue
-            # Copy the nodes of the new sub-graph to old graph and transform its
-            # inputs to match the old-graph inputs. The arg_transform function
-            # will pass the input arguments of the new node and will expect a
-            # mapping to the nodes of the old graph.
-            new_node = gm.graph.node_copy(
-                n, arg_transform=lambda arg: name_to_node[arg.name]
-            )
-
-            if n.name in node_to_recompute_names:
-                old_node = name_to_node[n.name]
-                # Replace all the uses of the old node with new recomputation node
-                replace_subsequent_uses_of(
-                    gm.graph, old_node=old_node, new_node=new_node
+        with gm.graph.inserting_before(first_back_access):
+            for n in recompute_subgraph.nodes:
+                if n.op == "placeholder" or n.op == "output":
+                    continue
+                # Copy the nodes of the new sub-graph to old graph and transform its
+                # inputs to match the old-graph inputs. The arg_transform function
+                # will pass the input arguments of the new node and will expect a
+                # mapping to the nodes of the old graph.
+                new_node = gm.graph.node_copy(
+                    n, arg_transform=lambda arg: name_to_node[arg.name]
                 )
-            # Add the new node to our name to node mapping
-            name_to_node[n.name] = new_node
+
+                recompute_names.append(new_node.name)
+
+                if n.name in node_to_recompute_names:
+                    sys.stderr.write(f'Replacing future occurences: {n.name}\n')
+                    old_node = name_to_node[n.name]
+                    # Replace all the uses of the old node with new recomputation node
+                    replace_subsequent_uses_of(
+                        gm.graph, old_node=old_node, new_node=new_node
+                    )
+                    
+                print(f'Old node: {n.name} New node: {new_node.name}')
+
+                # Add the new node to our name to node mapping
+                name_to_node[n.name] = new_node
 
     gm.graph.lint()
     gm.recompile()

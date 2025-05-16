@@ -76,9 +76,6 @@ class RecomputePolicy:
         
         return recompute_srcs
 
-    def check_recompute_list(self, recompute_list : List[RecomputeNode]):
-        pass
-
     # return the list 
     def get_recomputation(self, memory_cap : int):
         # initially add all intermediate nodes (nodes used in forward pass 
@@ -100,9 +97,9 @@ class RecomputePolicy:
             # to recompute nodes and remove from candidates
             cand = self._max_recomp_candidate(candidates)
             candidates.remove(cand)
-            
+
             # update existing recomputations
-            recomp_cnt = 1
+            recomp_cnt = 1 # recomputed once for itself
             for rp in recompute_nodes:
                 if cand in rp.recomp_srcs:
                     rp.recomp_srcs.remove(cand)
@@ -121,9 +118,12 @@ class RecomputePolicy:
                     active_bw_interval = (self.name_to_rank[cand.first_backward], self.name_to_rank[cand.last_backward])
                     first_bw_access = self.name_to_rank[future_cand.first_backward]
 
+                    # if the current node will be active at the time
+                    # when the future node will be recomputed, then no need to recompute this node
                     if first_bw_access >= active_bw_interval[0] and first_bw_access <= active_bw_interval[1]:
                         continue
 
+                    # otherwise, we would need to recompute the future node
                     future_cand.recomp_srcs.remove(cand)
                     future_cand.recomp_srcs.update(cand.recomp_srcs)
                     future_cand.recomp_time += cand.recomp_time
@@ -133,16 +133,30 @@ class RecomputePolicy:
                     for rp in recompute_nodes:
                         if future_cand in rp.recomp_srcs:
                             future_cand.total_compute_time += future_cand.recomp_time
-                if future_cand in cand.recomp_srcs:
+                elif future_cand in cand.recomp_srcs:
                     future_cand.total_compute_time = recomp_cnt * future_cand.recomp_time
                 
                 future_cand.recompute_ratio = future_cand.size_agg / future_cand.total_compute_time
         
         if len(candidates) == 0:
             sys.stderr.write('WARNING: recomputation candidates terminated before memory goal achieved\n')
-        # return the parsed list
-        return [RecomputeNode(n.name, self.name_to_node[n.name], self.name_to_node[n.first_backward], self.name_to_rank[n.first_backward], [self.name_to_node[src.name] for src in n.recomp_srcs]) for n in recompute_nodes]
+        
+        _, peak_mem = self._simulate_memory(recompute_nodes)
+        sys.stderr.write(f"Predicted peak memory usage: {peak_mem/1e9:.2f}GB\n")
 
+        ret_nodes = [RecomputeNode(n.name, self.name_to_node[n.name], self.name_to_node[n.first_backward], self.name_to_rank[n.first_backward], [self.name_to_node[src.name] for src in n.recomp_srcs]) for n in recompute_nodes]
+
+        # # some sanity check
+        # for rp in ret_nodes:
+        #     node = rp.node
+        #     srcs = rp.recomp_srcs
+
+        #     for src in srcs:
+        #         assert self.name_to_stats[src.name].rank < self.name_to_stats[node.name].rank
+        #         assert self.name_to_rank[self.name_to_stats[src.name].last_backward] > self.name_to_rank[self.name_to_stats[node.name].last_backward]
+
+        # return the parsed list
+        return ret_nodes
 
     # iterate over all candidates and find the one with the maximum recompute ratio
     def _max_recomp_candidate(self, candidates : Set[RecomputeStats]) -> RecomputeStats:
@@ -158,52 +172,52 @@ class RecomputePolicy:
     # simulate memory
     # returns the memory usage array over time and 
     # the peak memory during forward and backward passes
-    def _simulate_memory(self, recompute_nodes : List[RecomputeStats]) -> Tuple[np.array, float]:
-        memory_usage = np.zeros(len(self.nodes))
+    def _simulate_memory(self, recompute_nodes: List[RecomputeStats]) -> Tuple[np.array, float]:
+        total_memory = np.zeros(len(self.nodes))
 
-        # TODO: compute max memory over the forward and backward passes
-        # (ignore the optimization step since we cannot do anything about that)
         forward_start, backward_end = len(self.nodes), 0
-
         for node in self.nodes:
             if node.is_intermediate:
                 forward_start = min(forward_start, self.name_to_rank[node.first_forward])
                 backward_end = max(backward_end, self.name_to_rank[node.last_backward])
 
         for node in self.nodes:
-            # if this node is not being recomputed,
-            # add the memory comsumption to its active interval
-            
-            # if this is a node that is recomputed, then 
-            # it is inactive between its last use during forward pass
-            # and its first use in backward pass
-            if node in recompute_nodes:
-                start_fw = self.name_to_rank[node.first_forward]
-                end_fw = self.name_to_rank[node.last_forward]
-
-                start_bw = self.name_to_rank[node.first_backward]
-                end_bw = self.name_to_rank[node.last_backward]
-
-                memory_usage[start_fw:end_fw] += node.size_agg
-                memory_usage[start_bw:end_bw] += node.size_agg
+            # for params and opt states that are 
+            # always in memory
+            if node.op == 'placeholder': # static nodes
+                total_memory += node.size_agg
+            elif node not in recompute_nodes:
+                # then usual computation applies
+                start = node.rank 
+                end = self.name_to_rank[node.last_use] if node.last_use is not None else len(self.nodes)
+                total_memory[start:end] += node.size_agg
             else:
+                assert node.is_intermediate
+                
+                # first find the forward pass memory
+                if node.type != NodeType.ACT:
+                    sys.stderr.write(f'Got type {node.type}\n')
+                    assert False
+
+                # first account for the memory use during forward pass
+                # should free after the last forward use
                 start = node.rank
+                end = self.name_to_rank[node.last_forward] + 1
+                total_memory[start:end] += node.size_agg
 
-                # for placeholders, activity starts at 0
-                if node.op == 'placeholder':
-                    start = 0
-                
-                end = len(self.nodes)
+                # then account for the memory use in the backward pass
+                # occupied by this node! It will become active 
+                start = self.name_to_rank[node.first_backward]
+                end = self.name_to_rank[node.last_backward] + 1
+                total_memory[start:end] += node.size_agg
 
-                # if there is a last use for this node, set 
-                # that as the end
-                if node.last_use is not None:
-                    end = self.name_to_rank[node.last_use] + 1
+                # finally, account for the extra memory we will allocate while computing this node
+
                 
-                memory_usage[start:end] += node.size_agg
-        
-        # return memory_usage, memory_usage[forward_start:backward_end].max()
-        return memory_usage, memory_usage.max()
+
+
+        # Return memory profile and peak
+        return total_memory, total_memory.max()
     
 if __name__ == '__main__':
     print('Testing recompute')

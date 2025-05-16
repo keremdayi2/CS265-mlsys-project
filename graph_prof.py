@@ -40,11 +40,11 @@ class NodeStats:
     op : str | None = None
 
     # appearances of this node
-    first_forward : int | None = None
-    last_forward : int | None = None
-    first_backward : int | None = None
-    last_backward : int | None = None
-    last_use : int | None = None
+    first_forward : str | None = None
+    last_forward : str | None = None
+    first_backward : str | None = None
+    last_backward : str | None = None
+    last_use : str | None = None
 
     # memory related variables
     size : List[int] = field(default_factory=list)

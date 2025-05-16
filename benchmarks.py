@@ -109,7 +109,7 @@ class Experiment:
 
     def graph_transformation(self, gm: fx.GraphModule, args: Any) -> fx.GraphModule:
         print(gm.graph.print_tabular())
-        warm_up_iters, profile_iters = 4, 8
+        warm_up_iters, profile_iters = 4, 4
         graph_profiler = GraphProfiler(gm)
 
         with torch.no_grad():
@@ -128,6 +128,14 @@ class Experiment:
 
         sys.stderr.write(f'Number of nodes to recompute {len(recomputation_list)}\n')
         gm = activation_checkpointing(gm, recomputation_list)
+
+        # # do some check
+        # recomputation_names = [rp.name for rp in recomputation_list]
+        
+        # for node in gm.graph.nodes:
+        #     if node.name in recomputation_names:
+        #         pass
+            
         recompute_profiler = GraphProfiler(gm)
 
         # re-run the profiler to gather statistics on the new computational graph
