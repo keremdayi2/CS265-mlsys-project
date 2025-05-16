@@ -79,7 +79,6 @@ def activation_checkpointing(gm: fx.GraphModule, recompute_list : List[Recompute
     # intermediate nodes MUST be a subset of the placeholder nodes and the
     # intermediate nodes that are checkpointed.
 
-    name_to_node = get_name_to_node_map(gm)
     assert recompute_list is not None
 
     # for each node that needs to be recomputed, 
@@ -93,6 +92,8 @@ def activation_checkpointing(gm: fx.GraphModule, recompute_list : List[Recompute
         node_to_recompute = [recomp_node.node]
         node_to_recompute_names = [recomp_node.name] 
             
+        name_to_node = get_name_to_node_map(gm)
+
         # get the recomputation subgraph using these inputs and 
         # outputs
         # sys.stderr.write(f'{recomp_node}\n')
@@ -133,6 +134,7 @@ def activation_checkpointing(gm: fx.GraphModule, recompute_list : List[Recompute
                 print(f'Old node: {n.name} New node: {new_node.name}')
 
                 # Add the new node to our name to node mapping
+                # this is used to track args
                 name_to_node[n.name] = new_node
 
     gm.graph.lint()

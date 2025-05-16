@@ -41,10 +41,10 @@ class Experiment:
         self.model_name = model_name
         self.batch_size = batch_size
         
-        if 'memory_cap' in extra_args.keys():
-            self.memory_cap = extra_args['memory_cap'] * 1e9
+        if 'memory_ratio' in extra_args.keys():
+            self.memory_ratio = extra_args['memory_ratio']
         else:
-            self.memory_cap = 40 * 1e9
+            self.memory_ratio = 1.0
 
         if self.model_name == "Transformer":
 
@@ -120,11 +120,12 @@ class Experiment:
             for _ in range(profile_iters):
                 graph_profiler.run(*args)
             graph_profiler.aggregate_stats()
-            graph_profiler.print_stats(f'{model_name}_{batch_size}_pre')
+            graph_profiler.print_stats(f'{self.model_name}_{self.batch_size}_pre')
 
+        peak_mem_cuda = graph_profiler.peak_mem_cuda
         # create recompute policy here
         recompute_policy = RecomputePolicy([stats for name, stats in graph_profiler.name_to_stats.items()], graph_profiler.name_to_node)
-        recomputation_list = recompute_policy.get_recomputation(self.memory_cap)
+        recomputation_list = recompute_policy.get_recomputation(self.memory_ratio * peak_mem_cuda)
 
         sys.stderr.write(f'Number of nodes to recompute {len(recomputation_list)}\n')
         gm = activation_checkpointing(gm, recomputation_list)
@@ -147,7 +148,7 @@ class Experiment:
             for _ in range(profile_iters):
                    recompute_profiler.run(*args)
             recompute_profiler.aggregate_stats()
-            recompute_profiler.print_stats(f'{model_name}_{batch_size}_post')
+            recompute_profiler.print_stats(f'{self.model_name}_{self.batch_size}_{self.memory_ratio}_post')
     
         return gm
 
@@ -160,20 +161,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run benchmarks")
     parser.add_argument("--model_idx", type=int, required=True, help="Model index to run")
     parser.add_argument("--batch_idx", type=int, required=True, help="Model index to run")
-    parser.add_argument("--mem_cap", type=float, required=True, help="Model index to run")
+    parser.add_argument("--mem_ratio", type=float, required=True, help="Model index to run")
 
     args = parser.parse_args()
 
     model_idx = args.model_idx
     batch_idx = args.batch_idx
-    memory_cap = args.mem_cap
+    memory_ratio = args.mem_ratio
 
     # parse experiment arguments
     model_name = model_names[model_idx]
     batch_size = model_batch_sizes[model_name][batch_idx]
-    sys.stderr.write(f'Running experiment. Model: {model_name}, Batch size: {batch_size} Memory cap: {memory_cap}\n')
+    sys.stderr.write(f'Running experiment. Model: {model_name}, Batch size: {batch_size} Memory ratio: {memory_ratio}\n')
 
-    exp = Experiment(model_name, batch_size, {'memory_cap' : memory_cap})
+    exp = Experiment(model_name, batch_size, {'memory_ratio' : memory_ratio})
 
     exp.init_opt_states()
     compiled_fn = compile(exp.train_step, exp.graph_transformation)

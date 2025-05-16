@@ -213,9 +213,6 @@ class RecomputePolicy:
 
                 # finally, account for the extra memory we will allocate while computing this node
 
-                
-
-
         # Return memory profile and peak
         return total_memory, total_memory.max()
     

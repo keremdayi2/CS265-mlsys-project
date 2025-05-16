@@ -267,7 +267,7 @@ class GraphProfiler(fx.Interpreter):
             name = n.name
             rank = self.name_to_stats[name].rank
 
-            if rank >= self.op_start_rank and rank <= self.sep_rank:
+            if rank >= self.op_start_rank and rank <= self.sep_backward_rank:
                 if op_types[name] == NodeType.OTHER:
                     # if this will be reused in the backward pass 
                     # those are what we need
@@ -281,7 +281,7 @@ class GraphProfiler(fx.Interpreter):
             name = n.name
             rank = self.name_to_stats[name].rank
 
-            if rank >= self.sep_backward_rank and rank < self.optimizer_start_rank:
+            if rank > self.sep_backward_rank and rank < self.optimizer_start_rank:
                 # if this is not a main gradient, set to intermediate
                 if op_types[name] == NodeType.OTHER:
                     op_types[name] = NodeType.GRAD_INTERMEDIATE
@@ -461,7 +461,13 @@ class GraphProfiler(fx.Interpreter):
             self.name_to_stats[k].effective_size_agg = float(torch.Tensor(stats.effective_size).mean().item())
             self.name_to_stats[k].runtime_agg = float(torch.Tensor(stats.runtime).mean().item())
         
-        self.total_runtime = float(torch.Tensor(self.total_runtime_lst).mean().item())
+        # self.total_runtime = float(torch.Tensor(self.total_runtime_lst).mean().item())
+
+        # find peak memory here
+        self.peak_mem_cuda = 0
+        for k in self.name_to_stats.keys():
+            mem_cuda = self.name_to_stats[k].cuda_memory
+            self.peak_mem_cuda = max(mem_cuda, self.peak_mem_cuda)
 
     def print_stats(self, filename : str) -> None:
         columns = ['rank', 'name', 'op', 'target',
